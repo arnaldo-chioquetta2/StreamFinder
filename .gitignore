@@ -1,0 +1,28 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build output
+bin/
+obj/
+[Bb]uild/
+[Dd]ebug/
+[Rr]elease/
+
+# NuGet and package restore artifacts
+packages/
+*.nupkg
+
+# Local application data and secrets
+config.ini
+favorites.json
+history.json
+Cache/
+
+# Temporary files
+*.tmp
+.tmp-*/
+
