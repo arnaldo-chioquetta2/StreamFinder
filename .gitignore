@@ -1,0 +1,38 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build
+bin/
+obj/
+Debug/
+Release/
+x64/
+x86/
+
+# NuGet
+packages/
+*.nupkg
+*.snupkg
+
+# Local application data / sensitive configuration
+config.ini
+favorites.json
+history.json
+Cache/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+*.old
+*.orig
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
