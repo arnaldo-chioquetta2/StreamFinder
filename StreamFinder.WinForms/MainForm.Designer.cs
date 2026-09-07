@@ -93,6 +93,7 @@ namespace StreamFinder.WinForms
             chkOwnedOnly.AutoSize = true;
             chkOwnedOnly.Location = new System.Drawing.Point(15, 62);
             chkOwnedOnly.Text = "Mostrar somente streamings que eu possuo";
+            chkOwnedOnly.CheckedChanged += new System.EventHandler(chkOwnedOnly_CheckedChanged);
             // flowResults
             flowResults.AutoScroll = true;
             flowResults.BackColor = System.Drawing.Color.WhiteSmoke;

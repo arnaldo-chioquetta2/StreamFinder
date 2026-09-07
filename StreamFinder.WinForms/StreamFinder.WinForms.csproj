@@ -58,6 +58,12 @@
     <Compile Include="MediaCardControl.Designer.cs">
       <DependentUpon>MediaCardControl.cs</DependentUpon>
     </Compile>
+    <Compile Include="MediaDetailsForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="MediaDetailsForm.Designer.cs">
+      <DependentUpon>MediaDetailsForm.cs</DependentUpon>
+    </Compile>
     <Compile Include="SettingsForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -73,7 +79,13 @@
     <Compile Include="Models\StreamingProvider.cs" />
     <Compile Include="Models\Tmdb\TmdbSearchResponse.cs" />
     <Compile Include="Models\Tmdb\TmdbSearchResult.cs" />
+    <Compile Include="Models\Tmdb\TmdbGenre.cs" />
+    <Compile Include="Models\Tmdb\TmdbDetailsResponse.cs" />
+    <Compile Include="Models\Tmdb\TmdbWatchProviderDto.cs" />
+    <Compile Include="Models\Tmdb\TmdbWatchProviderCountryDto.cs" />
+    <Compile Include="Models\Tmdb\TmdbWatchProvidersResponse.cs" />
     <Compile Include="Services\IniFileService.cs" />
+    <Compile Include="Services\ProviderPreferenceService.cs" />
     <Compile Include="Services\HttpService.cs" />
     <Compile Include="Services\FavoritesService.cs" />
     <Compile Include="Services\CacheService.cs" />
@@ -84,6 +96,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="MediaCardControl.resx">
       <DependentUpon>MediaCardControl.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="MediaDetailsForm.resx">
+      <DependentUpon>MediaDetailsForm.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="SettingsForm.resx">
       <DependentUpon>SettingsForm.cs</DependentUpon>

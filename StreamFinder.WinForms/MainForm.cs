@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using StreamFinder.WinForms.Models;
@@ -18,16 +20,23 @@ namespace StreamFinder.WinForms
         }
 
         private readonly TmdbService tmdbService;
+        private readonly IniFileService iniFileService;
         private readonly FavoritesService favoritesService;
         private readonly SearchHistoryService searchHistoryService;
+        private readonly ProviderPreferenceService providerPreferenceService;
+        private List<MediaItem> lastSearchResults = new List<MediaItem>();
+        private CancellationTokenSource filterCancellation;
+        private int filterVersion;
         private MainViewMode currentView;
 
         public MainForm()
         {
             InitializeComponent();
+            iniFileService = new IniFileService();
             tmdbService = new TmdbService();
             favoritesService = new FavoritesService();
             searchHistoryService = new SearchHistoryService();
+            providerPreferenceService = new ProviderPreferenceService(iniFileService);
             currentView = MainViewMode.Search;
         }
 
@@ -47,6 +56,7 @@ namespace StreamFinder.WinForms
 
             currentView = MainViewMode.Search;
             btnSearch.Enabled = false;
+            chkOwnedOnly.Enabled = false;
             toolStripStatusLabelMessage.Text = "Pesquisando...";
 
             try
@@ -63,7 +73,13 @@ namespace StreamFinder.WinForms
                     historySaveFailed = true;
                 }
 
-                var filteredResults = FilterByMediaType(results);
+                lastSearchResults = FilterByMediaType(results);
+                var filteredResults = await ApplyOwnedServicesFilterAsync(lastSearchResults);
+                if (filteredResults == null)
+                {
+                    return;
+                }
+
                 ClearResults();
                 foreach (var item in filteredResults)
                 {
@@ -76,7 +92,9 @@ namespace StreamFinder.WinForms
                 }
                 else if (filteredResults.Count == 0)
                 {
-                    toolStripStatusLabelMessage.Text = "Nenhum resultado encontrado.";
+                    toolStripStatusLabelMessage.Text = chkOwnedOnly.Checked && lastSearchResults.Count > 0
+                        ? "Nenhum título encontrado nos serviços habilitados."
+                        : "Nenhum resultado encontrado.";
                 }
                 else
                 {
@@ -106,6 +124,41 @@ namespace StreamFinder.WinForms
             finally
             {
                 btnSearch.Enabled = true;
+                chkOwnedOnly.Enabled = true;
+            }
+        }
+
+        private async void chkOwnedOnly_CheckedChanged(object sender, EventArgs e)
+        {
+            if (currentView != MainViewMode.Search || !btnSearch.Enabled || lastSearchResults == null)
+            {
+                return;
+            }
+
+            btnSearch.Enabled = false;
+            chkOwnedOnly.Enabled = false;
+            try
+            {
+                var filteredResults = await ApplyOwnedServicesFilterAsync(lastSearchResults);
+                if (filteredResults == null || currentView != MainViewMode.Search)
+                {
+                    return;
+                }
+
+                ClearResults();
+                foreach (var item in filteredResults)
+                {
+                    flowResults.Controls.Add(CreateMediaCard(item));
+                }
+
+                toolStripStatusLabelMessage.Text = filteredResults.Count == 0 && lastSearchResults.Count > 0
+                    ? "Nenhum título encontrado nos serviços habilitados."
+                    : string.Format("{0} resultado(s) encontrado(s).", filteredResults.Count);
+            }
+            finally
+            {
+                btnSearch.Enabled = true;
+                chkOwnedOnly.Enabled = true;
             }
         }
 
@@ -143,6 +196,117 @@ namespace StreamFinder.WinForms
             return filteredResults;
         }
 
+        private async Task<List<MediaItem>> ApplyOwnedServicesFilterAsync(IList<MediaItem> candidates)
+        {
+            CancelFilterOperation();
+            var operationVersion = ++filterVersion;
+            filterCancellation = new CancellationTokenSource();
+            var cancellationToken = filterCancellation.Token;
+
+            try
+            {
+                if (!chkOwnedOnly.Checked)
+                {
+                    return new List<MediaItem>(candidates ?? new List<MediaItem>());
+                }
+
+                toolStripStatusLabelMessage.Text = "Verificando serviços disponíveis...";
+                var compatibleResults = new List<MediaItem>();
+                var syncRoot = new object();
+                var failures = 0;
+                using (var semaphore = new SemaphoreSlim(4, 4))
+                {
+                    var tasks = new List<Task>();
+                    if (candidates != null)
+                    {
+                        foreach (var item in candidates)
+                        {
+                            if (item == null)
+                            {
+                                continue;
+                            }
+
+                            tasks.Add(CheckOwnedAvailabilityAsync(
+                                item,
+                                semaphore,
+                                cancellationToken,
+                                compatibleResults,
+                                syncRoot,
+                                () => Interlocked.Increment(ref failures)));
+                        }
+                    }
+
+                    await Task.WhenAll(tasks);
+                }
+
+                if (cancellationToken.IsCancellationRequested || operationVersion != filterVersion)
+                {
+                    return null;
+                }
+
+                return compatibleResults;
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+            finally
+            {
+                if (operationVersion == filterVersion && filterCancellation != null)
+                {
+                    filterCancellation.Dispose();
+                    filterCancellation = null;
+                }
+            }
+        }
+
+        private async Task CheckOwnedAvailabilityAsync(
+            MediaItem item,
+            SemaphoreSlim semaphore,
+            CancellationToken cancellationToken,
+            List<MediaItem> compatibleResults,
+            object syncRoot,
+            Action registerFailure)
+        {
+            await semaphore.WaitAsync(cancellationToken);
+            try
+            {
+                var availability = await tmdbService.GetWatchProvidersAsync(item);
+                if (availability != null && availability.Any(providerPreferenceService.IsAvailabilityCompatibleWithOwnedServices))
+                {
+                    lock (syncRoot)
+                    {
+                        compatibleResults.Add(item);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                registerFailure();
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }
+
+        private void CancelFilterOperation()
+        {
+            filterVersion++;
+            if (filterCancellation == null)
+            {
+                return;
+            }
+
+            filterCancellation.Cancel();
+            filterCancellation.Dispose();
+            filterCancellation = null;
+        }
+
         private void ClearResults()
         {
             while (flowResults.Controls.Count > 0)
@@ -156,10 +320,23 @@ namespace StreamFinder.WinForms
         private void mediaCard_DetailsClicked(object sender, EventArgs e)
         {
             var card = sender as MediaCardControl;
-            var title = card == null || card.Media == null || string.IsNullOrWhiteSpace(card.Media.Title)
-                ? "Sem t\u00edtulo"
-                : card.Media.Title;
-            toolStripStatusLabelMessage.Text = string.Format("Detalhes de: {0}", title);
+            if (card == null || card.Media == null)
+            {
+                return;
+            }
+
+            using (var form = new MediaDetailsForm(card.Media, favoritesService, tmdbService, iniFileService))
+            {
+                form.ShowDialog(this);
+            }
+
+            var isFavorite = favoritesService.IsFavorite(card.Media);
+            card.SetFavoriteState(isFavorite);
+            if (!isFavorite && currentView == MainViewMode.Favorites)
+            {
+                flowResults.Controls.Remove(card);
+                card.Dispose();
+            }
         }
 
         private void mediaCard_FavoriteClicked(object sender, EventArgs e)
