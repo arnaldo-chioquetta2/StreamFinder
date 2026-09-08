@@ -20,6 +20,7 @@ namespace StreamFinder.WinForms
         private readonly TmdbService tmdbService;
         private readonly IniFileService iniFileService;
         private readonly ProviderPreferenceService providerPreferenceService;
+        private readonly AvailabilityFallbackService availabilityFallbackService;
         private readonly HttpService httpService;
         private CancellationTokenSource posterCancellation;
         private CancellationTokenSource providersCancellation;
@@ -30,7 +31,9 @@ namespace StreamFinder.WinForms
             MediaItem media,
             FavoritesService favoritesService,
             TmdbService tmdbService,
-            IniFileService iniFileService)
+            IniFileService iniFileService,
+            HttpService httpService,
+            AvailabilityFallbackService availabilityFallbackService)
         {
             if (media == null)
             {
@@ -52,12 +55,23 @@ namespace StreamFinder.WinForms
                 throw new ArgumentNullException(nameof(iniFileService));
             }
 
+            if (httpService == null)
+            {
+                throw new ArgumentNullException(nameof(httpService));
+            }
+
+            if (availabilityFallbackService == null)
+            {
+                throw new ArgumentNullException(nameof(availabilityFallbackService));
+            }
+
             this.media = media;
             this.favoritesService = favoritesService;
             this.tmdbService = tmdbService;
             this.iniFileService = iniFileService;
             providerPreferenceService = new ProviderPreferenceService(iniFileService);
-            httpService = new HttpService();
+            this.httpService = httpService;
+            this.availabilityFallbackService = availabilityFallbackService;
             InitializeComponent();
             PopulateMediaDetails();
             UpdateFavoriteButton();
@@ -115,25 +129,98 @@ namespace StreamFinder.WinForms
 
             try
             {
-                var availability = await tmdbService.GetWatchProvidersAsync(media);
+                List<MediaAvailability> tmdbAvailability;
+                try
+                {
+                    tmdbAvailability = await tmdbService.GetWatchProvidersAsync(media);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception)
+                {
+                    // A falha do TMDb não deve ser mascarada pelo fallback.
+                    ShowAvailabilityErrorIfAvailable();
+                    return;
+                }
+
                 if (cancellationToken.IsCancellationRequested || IsDisposed || Disposing)
                 {
                     return;
                 }
 
-                var filteredAvailability = FilterWatchProviders(availability);
-                RenderWatchProviders(filteredAvailability, availability != null && availability.Count > 0, cancellationToken);
+                var combinedAvailability = tmdbAvailability ?? new List<MediaAvailability>();
+                var settings = iniFileService.LoadSettings();
+                if (settings.EnableScraping && ShouldUseFallback(combinedAvailability))
+                {
+                    try
+                    {
+                        var fallbackAvailability = await availabilityFallbackService.SearchAvailabilityAsync(
+                            media,
+                            settings.Country,
+                            cancellationToken);
+                        combinedAvailability = availabilityFallbackService.Combine(
+                            combinedAvailability,
+                            fallbackAvailability);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception)
+                    {
+                        // Resultados TMDb válidos continuam sendo exibidos.
+                    }
+                }
+
+                if (cancellationToken.IsCancellationRequested || IsDisposed || Disposing)
+                {
+                    return;
+                }
+
+                var filteredAvailability = FilterWatchProviders(combinedAvailability);
+                RenderWatchProviders(
+                    filteredAvailability,
+                    combinedAvailability.Count > 0,
+                    cancellationToken);
             }
             catch (OperationCanceledException)
             {
             }
             catch (Exception)
             {
-                if (!IsDisposed && !Disposing)
+                ShowAvailabilityErrorIfAvailable();
+            }
+        }
+
+        private static bool ShouldUseFallback(IList<MediaAvailability> availability)
+        {
+            if (availability == null || availability.Count == 0)
+            {
+                return true;
+            }
+
+            foreach (var item in availability)
+            {
+                if (item != null &&
+                    (item.AvailabilityType == AvailabilityType.Subscription ||
+                     item.AvailabilityType == AvailabilityType.Free ||
+                     item.AvailabilityType == AvailabilityType.Ads))
                 {
-                    DisposeProviderControls();
-                    lblAvailabilityStatus.Text = "Não foi possível consultar a disponibilidade no momento.";
+                    return false;
                 }
+            }
+
+            return true;
+        }
+
+        private void ShowAvailabilityErrorIfAvailable()
+        {
+            if (!IsDisposed && !Disposing)
+            {
+                DisposeProviderControls();
+                lblAvailabilityStatus.Text = "Não foi possível consultar a disponibilidade no momento.";
             }
         }
 

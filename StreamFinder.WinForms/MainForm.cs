@@ -20,7 +20,9 @@ namespace StreamFinder.WinForms
         }
 
         private readonly TmdbService tmdbService;
+        private readonly HttpService httpService;
         private readonly IniFileService iniFileService;
+        private readonly AvailabilityFallbackService availabilityFallbackService;
         private readonly FavoritesService favoritesService;
         private readonly SearchHistoryService searchHistoryService;
         private readonly ProviderPreferenceService providerPreferenceService;
@@ -40,8 +42,13 @@ namespace StreamFinder.WinForms
         public MainForm()
         {
             InitializeComponent();
+            httpService = new HttpService();
             iniFileService = new IniFileService();
-            tmdbService = new TmdbService();
+            tmdbService = new TmdbService(httpService, iniFileService, new CacheService());
+            var plutoSource = new PlutoTvFallbackSource(httpService, iniFileService);
+            availabilityFallbackService = new AvailabilityFallbackService(
+                iniFileService,
+                new IAvailabilityFallbackSource[] { plutoSource });
             favoritesService = new FavoritesService();
             searchHistoryService = new SearchHistoryService();
             providerPreferenceService = new ProviderPreferenceService(iniFileService);
@@ -721,7 +728,13 @@ namespace StreamFinder.WinForms
                 return;
             }
 
-            using (var form = new MediaDetailsForm(card.Media, favoritesService, tmdbService, iniFileService))
+            using (var form = new MediaDetailsForm(
+                card.Media,
+                favoritesService,
+                tmdbService,
+                iniFileService,
+                httpService,
+                availabilityFallbackService))
             {
                 form.ShowDialog(this);
             }
