@@ -42,6 +42,7 @@ namespace StreamFinder.WinForms
         public MainForm()
         {
             InitializeComponent();
+            FormClosing += MainForm_FormClosing;
             httpService = new HttpService();
             iniFileService = new IniFileService();
             tmdbService = new TmdbService(httpService, iniFileService, new CacheService());
@@ -177,11 +178,20 @@ namespace StreamFinder.WinForms
             UpdateLoadMoreButton();
         }
 
+        private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            searchOperationVersion++;
+            CancelFilterOperation();
+            isLoadingMore = false;
+            currentView = MainViewMode.History;
+        }
+
         private bool IsCurrentSearchOperation(int operationVersion)
         {
             return operationVersion == searchOperationVersion &&
                 currentView == MainViewMode.Search &&
-                !string.IsNullOrWhiteSpace(currentSearchQuery);
+                !string.IsNullOrWhiteSpace(currentSearchQuery) &&
+                !IsDisposed && !Disposing;
         }
 
         private async void btnLoadMore_Click(object sender, EventArgs e)
@@ -288,7 +298,7 @@ namespace StreamFinder.WinForms
 
         private async void chkOwnedOnly_CheckedChanged(object sender, EventArgs e)
         {
-            if (currentView != MainViewMode.Search || !btnSearch.Enabled || lastSearchResults == null)
+            if (currentView != MainViewMode.Search || isLoadingMore || !btnSearch.Enabled || lastSearchResults == null)
             {
                 return;
             }
@@ -315,16 +325,29 @@ namespace StreamFinder.WinForms
                         ? "Nenhum resultado encontrado com os filtros selecionados."
                         : string.Format("{0} resultado(s) encontrado(s).", filteredResults.Count);
             }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception)
+            {
+                if (!IsDisposed && !Disposing)
+                {
+                    toolStripStatusLabelMessage.Text = "N\u00e3o foi poss\u00edvel aplicar o filtro de servi\u00e7os.";
+                }
+            }
             finally
             {
-                btnSearch.Enabled = true;
-                chkOwnedOnly.Enabled = true;
+                if (!IsDisposed && !Disposing)
+                {
+                    btnSearch.Enabled = true;
+                    chkOwnedOnly.Enabled = true;
+                }
             }
         }
 
         private async void SearchViewFilter_Changed(object sender, EventArgs e)
         {
-            if (currentView != MainViewMode.Search || !btnSearch.Enabled ||
+            if (currentView != MainViewMode.Search || isLoadingMore || !btnSearch.Enabled ||
                 lastSearchResults == null || lastSearchResults.Count == 0)
             {
                 return;
@@ -345,10 +368,23 @@ namespace StreamFinder.WinForms
                     ? "Nenhum resultado encontrado com os filtros selecionados."
                     : string.Format("{0} resultado(s) encontrado(s).", filteredResults.Count);
             }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception)
+            {
+                if (!IsDisposed && !Disposing)
+                {
+                    toolStripStatusLabelMessage.Text = "N\u00e3o foi poss\u00edvel aplicar os filtros.";
+                }
+            }
             finally
             {
-                btnSearch.Enabled = true;
-                chkOwnedOnly.Enabled = true;
+                if (!IsDisposed && !Disposing)
+                {
+                    btnSearch.Enabled = true;
+                    chkOwnedOnly.Enabled = true;
+                }
             }
         }
 
@@ -503,6 +539,9 @@ namespace StreamFinder.WinForms
 
         private void UpdateYearOptions(IList<MediaItem> results)
         {
+            int previousYear;
+            var hadPreviousYear = TryGetSelectedYear(out previousYear);
+
             cmbYear.BeginUpdate();
             try
             {
@@ -517,7 +556,10 @@ namespace StreamFinder.WinForms
                     cmbYear.Items.Add(year.ToString());
                 }
 
-                cmbYear.SelectedIndex = 0;
+                var selectedIndex = hadPreviousYear
+                    ? cmbYear.Items.IndexOf(previousYear.ToString())
+                    : -1;
+                cmbYear.SelectedIndex = selectedIndex >= 1 ? selectedIndex : 0;
             }
             finally
             {
