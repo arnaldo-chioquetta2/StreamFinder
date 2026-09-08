@@ -17,6 +17,8 @@ namespace StreamFinder.WinForms
         private System.Windows.Forms.ComboBox cmbSort;
         private System.Windows.Forms.CheckBox chkOwnedOnly;
         private System.Windows.Forms.FlowLayoutPanel flowResults;
+        private System.Windows.Forms.Panel panelLoadMore;
+        private System.Windows.Forms.Button btnLoadMore;
         private System.Windows.Forms.StatusStrip statusStrip;
         private System.Windows.Forms.ToolStripStatusLabel toolStripStatusLabelMessage;
 
@@ -43,6 +45,8 @@ namespace StreamFinder.WinForms
             cmbSort = new System.Windows.Forms.ComboBox();
             chkOwnedOnly = new System.Windows.Forms.CheckBox();
             flowResults = new System.Windows.Forms.FlowLayoutPanel();
+            panelLoadMore = new System.Windows.Forms.Panel();
+            btnLoadMore = new System.Windows.Forms.Button();
             statusStrip = new System.Windows.Forms.StatusStrip();
             toolStripStatusLabelMessage = new System.Windows.Forms.ToolStripStatusLabel();
             panelSidebar.SuspendLayout();
@@ -90,6 +94,9 @@ namespace StreamFinder.WinForms
             ConfigureCombo(cmbGenre, "Todos os gêneros", 710, "Gênero");
             ConfigureCombo(cmbYear, "Todos os anos", 855, "Ano");
             ConfigureCombo(cmbSort, "Título", "Ano", "Nota", 1000, "Ordenação");
+            cmbGenre.SelectedIndexChanged += new System.EventHandler(SearchViewFilter_Changed);
+            cmbYear.SelectedIndexChanged += new System.EventHandler(SearchViewFilter_Changed);
+            cmbSort.SelectedIndexChanged += new System.EventHandler(SearchViewFilter_Changed);
             chkOwnedOnly.AutoSize = true;
             chkOwnedOnly.Location = new System.Drawing.Point(15, 62);
             chkOwnedOnly.Text = "Mostrar somente streamings que eu possuo";
@@ -99,6 +106,17 @@ namespace StreamFinder.WinForms
             flowResults.BackColor = System.Drawing.Color.WhiteSmoke;
             flowResults.Dock = System.Windows.Forms.DockStyle.Fill;
             flowResults.Padding = new System.Windows.Forms.Padding(12);
+            // load more
+            panelLoadMore.Dock = System.Windows.Forms.DockStyle.Bottom;
+            panelLoadMore.Height = 44;
+            panelLoadMore.Visible = false;
+            btnLoadMore.Anchor = System.Windows.Forms.AnchorStyles.Top;
+            btnLoadMore.Location = new System.Drawing.Point(525, 6);
+            btnLoadMore.Size = new System.Drawing.Size(150, 30);
+            btnLoadMore.Text = "Carregar mais";
+            btnLoadMore.UseVisualStyleBackColor = true;
+            btnLoadMore.Click += new System.EventHandler(btnLoadMore_Click);
+            panelLoadMore.Controls.Add(btnLoadMore);
             // status
             statusStrip.Items.Add(toolStripStatusLabelMessage);
             statusStrip.Dock = System.Windows.Forms.DockStyle.Bottom;
@@ -108,6 +126,7 @@ namespace StreamFinder.WinForms
             AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             ClientSize = new System.Drawing.Size(1200, 750);
             Controls.Add(flowResults);
+            Controls.Add(panelLoadMore);
             Controls.Add(panelTop);
             Controls.Add(panelSidebar);
             Controls.Add(statusStrip);

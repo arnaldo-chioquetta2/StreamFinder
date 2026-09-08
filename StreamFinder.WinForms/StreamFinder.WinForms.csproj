@@ -74,6 +74,7 @@
     <Compile Include="Models\AppSettings.cs" />
     <Compile Include="Models\MediaAvailability.cs" />
     <Compile Include="Models\MediaItem.cs" />
+    <Compile Include="Models\PagedMediaResult.cs" />
     <Compile Include="Models\MediaType.cs" />
     <Compile Include="Models\SearchHistoryItem.cs" />
     <Compile Include="Models\StreamingProvider.cs" />
@@ -86,6 +87,7 @@
     <Compile Include="Models\Tmdb\TmdbWatchProvidersResponse.cs" />
     <Compile Include="Services\IniFileService.cs" />
     <Compile Include="Services\ProviderPreferenceService.cs" />
+    <Compile Include="Services\TmdbGenreMapper.cs" />
     <Compile Include="Services\HttpService.cs" />
     <Compile Include="Services\FavoritesService.cs" />
     <Compile Include="Services\CacheService.cs" />

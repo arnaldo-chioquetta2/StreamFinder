@@ -38,10 +38,20 @@ namespace StreamFinder.WinForms.Services
 
         public async Task<List<MediaItem>> SearchAsync(string query)
         {
-            var results = new List<MediaItem>();
+            var pagedResult = await SearchPageAsync(query, 1);
+            return pagedResult.Items;
+        }
+
+        public async Task<PagedMediaResult> SearchPageAsync(string query, int page)
+        {
+            var pagedResult = new PagedMediaResult
+            {
+                Page = page < 1 ? 1 : page
+            };
+
             if (string.IsNullOrWhiteSpace(query))
             {
-                return results;
+                return pagedResult;
             }
 
             var settings = iniFileService.LoadSettings();
@@ -53,17 +63,19 @@ namespace StreamFinder.WinForms.Services
             var normalizedQuery = query.Trim();
             var cacheKey = string.Format(
                 CultureInfo.InvariantCulture,
-                "tmdb-search-multi|{0}|pt-BR|BR|1",
-                normalizedQuery.ToLowerInvariant());
+                "tmdb-search-multi|{0}|pt-BR|BR|{1}",
+                normalizedQuery.ToLowerInvariant(),
+                pagedResult.Page);
 
             string json;
             if (!cacheService.TryGet(cacheKey, settings.CacheHours, out json))
             {
                 var url = string.Format(
                     CultureInfo.InvariantCulture,
-                    "{0}?api_key={1}&language=pt-BR&region=BR&page=1&query={2}",
+                    "{0}?api_key={1}&language=pt-BR&region=BR&page={2}&query={3}",
                     ApiBaseUrl,
                     Uri.EscapeDataString(settings.TmdbApiKey),
+                    pagedResult.Page,
                     Uri.EscapeDataString(normalizedQuery));
 
                 json = await httpService.GetJsonAsync(url).ConfigureAwait(false);
@@ -81,9 +93,18 @@ namespace StreamFinder.WinForms.Services
             }
 
             var response = JsonConvert.DeserializeObject<TmdbSearchResponse>(json);
-            if (response == null || response.Results == null)
+            if (response == null)
             {
-                return results;
+                return pagedResult;
+            }
+
+            pagedResult.Page = response.Page < 1 ? pagedResult.Page : response.Page;
+            pagedResult.TotalPages = response.TotalPages < 0 ? 0 : response.TotalPages;
+            pagedResult.TotalResults = response.TotalResults < 0 ? 0 : response.TotalResults;
+
+            if (response.Results == null)
+            {
+                return pagedResult;
             }
 
             foreach (var result in response.Results)
@@ -91,11 +112,11 @@ namespace StreamFinder.WinForms.Services
                 var item = ConvertResult(result);
                 if (item != null)
                 {
-                    results.Add(item);
+                    pagedResult.Items.Add(item);
                 }
             }
 
-            return results;
+            return pagedResult;
         }
 
         public async Task<MediaItem> GetDetailsAsync(MediaItem media)
@@ -381,7 +402,8 @@ namespace StreamFinder.WinForms.Services
                 PosterUrl = string.IsNullOrWhiteSpace(result.PosterPath)
                     ? null
                     : PosterBaseUrl + result.PosterPath,
-                MediaType = mediaType
+                MediaType = mediaType,
+                Genres = TmdbGenreMapper.Map(mediaType, result.GenreIds)
             };
         }
 

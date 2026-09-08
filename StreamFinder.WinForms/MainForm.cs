@@ -25,8 +25,16 @@ namespace StreamFinder.WinForms
         private readonly SearchHistoryService searchHistoryService;
         private readonly ProviderPreferenceService providerPreferenceService;
         private List<MediaItem> lastSearchResults = new List<MediaItem>();
+        private List<MediaItem> lastOwnedFilterResults;
+        private string lastOwnedFilterCandidateKey;
         private CancellationTokenSource filterCancellation;
         private int filterVersion;
+        private string currentSearchQuery;
+        private int currentSearchPage;
+        private int totalSearchPages;
+        private int totalSearchResults;
+        private int searchOperationVersion;
+        private bool isLoadingMore;
         private MainViewMode currentView;
 
         public MainForm()
@@ -38,6 +46,7 @@ namespace StreamFinder.WinForms
             searchHistoryService = new SearchHistoryService();
             providerPreferenceService = new ProviderPreferenceService(iniFileService);
             currentView = MainViewMode.Search;
+            UpdateLoadMoreButton();
         }
 
         private async void btnSearch_Click(object sender, EventArgs e)
@@ -55,13 +64,23 @@ namespace StreamFinder.WinForms
             }
 
             currentView = MainViewMode.Search;
+            BeginNewSearch(query);
+            var operationVersion = searchOperationVersion;
             btnSearch.Enabled = false;
             chkOwnedOnly.Enabled = false;
             toolStripStatusLabelMessage.Text = "Pesquisando...";
 
             try
             {
-                var results = await tmdbService.SearchAsync(query);
+                var pageResult = await tmdbService.SearchPageAsync(query, 1);
+                if (!IsCurrentSearchOperation(operationVersion))
+                {
+                    return;
+                }
+
+                currentSearchPage = pageResult == null ? 1 : Math.Max(1, pageResult.Page);
+                totalSearchPages = pageResult == null ? 0 : Math.Max(0, pageResult.TotalPages);
+                totalSearchResults = pageResult == null ? 0 : Math.Max(0, pageResult.TotalResults);
                 var historySaveFailed = false;
 
                 try
@@ -73,8 +92,12 @@ namespace StreamFinder.WinForms
                     historySaveFailed = true;
                 }
 
-                lastSearchResults = FilterByMediaType(results);
-                var filteredResults = await ApplyOwnedServicesFilterAsync(lastSearchResults);
+                lastSearchResults = pageResult == null || pageResult.Items == null
+                    ? new List<MediaItem>()
+                    : pageResult.Items;
+                UpdateYearOptions(lastSearchResults);
+                UpdateGenreOptions(lastSearchResults);
+                var filteredResults = await GetCurrentSearchResultsAsync(true);
                 if (filteredResults == null)
                 {
                     return;
@@ -94,14 +117,17 @@ namespace StreamFinder.WinForms
                 {
                     toolStripStatusLabelMessage.Text = chkOwnedOnly.Checked && lastSearchResults.Count > 0
                         ? "Nenhum título encontrado nos serviços habilitados."
-                        : "Nenhum resultado encontrado.";
+                        : "Nenhum resultado encontrado com os filtros selecionados.";
                 }
                 else
                 {
                     toolStripStatusLabelMessage.Text = string.Format(
-                        "{0} resultado(s) encontrado(s).",
-                        filteredResults.Count);
+                        "{0} resultado(s) carregado(s) de {1}.",
+                        filteredResults.Count,
+                        totalSearchResults > 0 ? totalSearchResults : lastSearchResults.Count);
                 }
+
+                UpdateLoadMoreButton();
             }
             catch (InvalidOperationException ex)
             {
@@ -125,7 +151,132 @@ namespace StreamFinder.WinForms
             {
                 btnSearch.Enabled = true;
                 chkOwnedOnly.Enabled = true;
+                UpdateLoadMoreButton();
             }
+        }
+
+        private void BeginNewSearch(string query)
+        {
+            searchOperationVersion++;
+            CancelFilterOperation();
+            currentSearchQuery = query;
+            currentSearchPage = 0;
+            totalSearchPages = 0;
+            totalSearchResults = 0;
+            isLoadingMore = false;
+            lastSearchResults = new List<MediaItem>();
+            lastOwnedFilterResults = null;
+            lastOwnedFilterCandidateKey = null;
+            UpdateLoadMoreButton();
+        }
+
+        private bool IsCurrentSearchOperation(int operationVersion)
+        {
+            return operationVersion == searchOperationVersion &&
+                currentView == MainViewMode.Search &&
+                !string.IsNullOrWhiteSpace(currentSearchQuery);
+        }
+
+        private async void btnLoadMore_Click(object sender, EventArgs e)
+        {
+            if (isLoadingMore || currentView != MainViewMode.Search ||
+                string.IsNullOrWhiteSpace(currentSearchQuery) ||
+                currentSearchPage < 1 || currentSearchPage >= totalSearchPages)
+            {
+                return;
+            }
+
+            var operationVersion = searchOperationVersion;
+            var nextPage = currentSearchPage + 1;
+            isLoadingMore = true;
+            UpdateLoadMoreButton();
+            chkOwnedOnly.Enabled = false;
+            toolStripStatusLabelMessage.Text = "Carregando mais resultados...";
+
+            try
+            {
+                var pageResult = await tmdbService.SearchPageAsync(currentSearchQuery, nextPage);
+                if (operationVersion != searchOperationVersion || currentView != MainViewMode.Search)
+                {
+                    return;
+                }
+
+                if (pageResult == null)
+                {
+                    toolStripStatusLabelMessage.Text = "Não foi possível carregar mais resultados.";
+                    return;
+                }
+
+                AppendDistinctResults(pageResult.Items);
+                currentSearchPage = pageResult.Page < nextPage ? nextPage : pageResult.Page;
+                if (pageResult.TotalPages > 0)
+                {
+                    totalSearchPages = pageResult.TotalPages;
+                }
+
+                if (pageResult.TotalResults > 0)
+                {
+                    totalSearchResults = pageResult.TotalResults;
+                }
+
+                UpdateYearOptions(lastSearchResults);
+                UpdateGenreOptions(lastSearchResults);
+                var filteredResults = await GetCurrentSearchResultsForAdditionalPageAsync(pageResult.Items);
+                if (operationVersion != searchOperationVersion || filteredResults == null)
+                {
+                    return;
+                }
+
+                RenderSearchResults(filteredResults);
+                toolStripStatusLabelMessage.Text = string.Format(
+                    "{0} resultado(s) carregado(s) de {1}.",
+                    lastSearchResults.Count,
+                    totalSearchResults > 0 ? totalSearchResults : lastSearchResults.Count);
+            }
+            catch (Exception)
+            {
+                if (operationVersion == searchOperationVersion)
+                {
+                    toolStripStatusLabelMessage.Text = "Não foi possível carregar mais resultados.";
+                }
+            }
+            finally
+            {
+                if (operationVersion == searchOperationVersion)
+                {
+                    isLoadingMore = false;
+                    chkOwnedOnly.Enabled = true;
+                    UpdateLoadMoreButton();
+                }
+            }
+        }
+
+        private void AppendDistinctResults(IList<MediaItem> newItems)
+        {
+            if (newItems == null)
+            {
+                return;
+            }
+
+            foreach (var item in newItems)
+            {
+                if (item == null || lastSearchResults.Any(existing =>
+                    string.Equals(existing.Id, item.Id, StringComparison.OrdinalIgnoreCase) &&
+                    existing.MediaType == item.MediaType))
+                {
+                    continue;
+                }
+
+                lastSearchResults.Add(item);
+            }
+        }
+
+        private void UpdateLoadMoreButton()
+        {
+            var hasNextPage = currentView == MainViewMode.Search &&
+                currentSearchPage > 0 && totalSearchPages > currentSearchPage;
+            btnLoadMore.Visible = hasNextPage;
+            btnLoadMore.Enabled = hasNextPage && !isLoadingMore;
         }
 
         private async void chkOwnedOnly_CheckedChanged(object sender, EventArgs e)
@@ -139,7 +290,7 @@ namespace StreamFinder.WinForms
             chkOwnedOnly.Enabled = false;
             try
             {
-                var filteredResults = await ApplyOwnedServicesFilterAsync(lastSearchResults);
+                var filteredResults = await GetCurrentSearchResultsAsync(true);
                 if (filteredResults == null || currentView != MainViewMode.Search)
                 {
                     return;
@@ -153,6 +304,38 @@ namespace StreamFinder.WinForms
 
                 toolStripStatusLabelMessage.Text = filteredResults.Count == 0 && lastSearchResults.Count > 0
                     ? "Nenhum título encontrado nos serviços habilitados."
+                    : filteredResults.Count == 0
+                        ? "Nenhum resultado encontrado com os filtros selecionados."
+                        : string.Format("{0} resultado(s) encontrado(s).", filteredResults.Count);
+            }
+            finally
+            {
+                btnSearch.Enabled = true;
+                chkOwnedOnly.Enabled = true;
+            }
+        }
+
+        private async void SearchViewFilter_Changed(object sender, EventArgs e)
+        {
+            if (currentView != MainViewMode.Search || !btnSearch.Enabled ||
+                lastSearchResults == null || lastSearchResults.Count == 0)
+            {
+                return;
+            }
+
+            btnSearch.Enabled = false;
+            chkOwnedOnly.Enabled = false;
+            try
+            {
+                var filteredResults = await GetCurrentSearchResultsAsync(false);
+                if (filteredResults == null || currentView != MainViewMode.Search)
+                {
+                    return;
+                }
+
+                RenderSearchResults(filteredResults);
+                toolStripStatusLabelMessage.Text = filteredResults.Count == 0
+                    ? "Nenhum resultado encontrado com os filtros selecionados."
                     : string.Format("{0} resultado(s) encontrado(s).", filteredResults.Count);
             }
             finally
@@ -194,6 +377,219 @@ namespace StreamFinder.WinForms
             }
 
             return filteredResults;
+        }
+
+        private async Task<List<MediaItem>> GetCurrentSearchResultsAsync(bool forceOwnedFilterRefresh)
+        {
+            var candidates = GetCurrentSearchCandidates();
+            if (!chkOwnedOnly.Checked)
+            {
+                lastOwnedFilterResults = null;
+                lastOwnedFilterCandidateKey = null;
+                return SortSearchResults(candidates);
+            }
+
+            var candidateKey = CreateCandidateKey(candidates);
+            if (!forceOwnedFilterRefresh && lastOwnedFilterResults != null &&
+                string.Equals(candidateKey, lastOwnedFilterCandidateKey, StringComparison.Ordinal))
+            {
+                return SortSearchResults(new List<MediaItem>(lastOwnedFilterResults));
+            }
+
+            var ownedResults = await ApplyOwnedServicesFilterAsync(candidates);
+            if (ownedResults == null)
+            {
+                return null;
+            }
+
+            lastOwnedFilterResults = new List<MediaItem>(ownedResults);
+            lastOwnedFilterCandidateKey = candidateKey;
+            return SortSearchResults(ownedResults);
+        }
+
+        private List<MediaItem> GetCurrentSearchCandidates()
+        {
+            return GetCurrentSearchCandidates(lastSearchResults);
+        }
+
+        private List<MediaItem> GetCurrentSearchCandidates(IList<MediaItem> source)
+        {
+            var candidates = FilterByMediaType((source ?? new List<MediaItem>()).ToList());
+            int selectedYear;
+            if (!TryGetSelectedYear(out selectedYear))
+            {
+                return FilterBySelectedGenre(candidates);
+            }
+
+            return FilterBySelectedGenre(candidates
+                .Where(item => item.Year.HasValue && item.Year.Value == selectedYear)
+                .ToList());
+        }
+
+        private async Task<List<MediaItem>> GetCurrentSearchResultsForAdditionalPageAsync(
+            IList<MediaItem> newItems)
+        {
+            if (!chkOwnedOnly.Checked)
+            {
+                lastOwnedFilterResults = null;
+                lastOwnedFilterCandidateKey = null;
+                return SortSearchResults(GetCurrentSearchCandidates());
+            }
+
+            var newCandidates = GetCurrentSearchCandidates(newItems);
+            var newOwnedResults = await ApplyOwnedServicesFilterAsync(newCandidates);
+            if (newOwnedResults == null)
+            {
+                return null;
+            }
+
+            var combinedOwnedResults = new List<MediaItem>(lastOwnedFilterResults ?? new List<MediaItem>());
+            foreach (var item in newOwnedResults)
+            {
+                if (!combinedOwnedResults.Any(existing =>
+                    string.Equals(existing.Id, item.Id, StringComparison.OrdinalIgnoreCase) &&
+                    existing.MediaType == item.MediaType))
+                {
+                    combinedOwnedResults.Add(item);
+                }
+            }
+
+            lastOwnedFilterResults = combinedOwnedResults;
+            lastOwnedFilterCandidateKey = CreateCandidateKey(GetCurrentSearchCandidates());
+            return SortSearchResults(combinedOwnedResults);
+        }
+
+        private List<MediaItem> FilterBySelectedGenre(IList<MediaItem> candidates)
+        {
+            var selectedGenre = GetSelectedGenre();
+            if (string.IsNullOrWhiteSpace(selectedGenre))
+            {
+                return new List<MediaItem>(candidates ?? new List<MediaItem>());
+            }
+
+            return (candidates ?? new List<MediaItem>())
+                .Where(item => item.Genres != null && item.Genres.Any(genre =>
+                    string.Equals(genre, selectedGenre, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
+
+        private string GetSelectedGenre()
+        {
+            if (cmbGenre.SelectedIndex <= 0 || cmbGenre.SelectedItem == null)
+            {
+                return null;
+            }
+
+            return cmbGenre.SelectedItem.ToString();
+        }
+
+        private bool TryGetSelectedYear(out int year)
+        {
+            year = 0;
+            if (cmbYear.SelectedIndex <= 0 || cmbYear.SelectedItem == null)
+            {
+                return false;
+            }
+
+            return int.TryParse(cmbYear.SelectedItem.ToString(), out year);
+        }
+
+        private void UpdateYearOptions(IList<MediaItem> results)
+        {
+            cmbYear.BeginUpdate();
+            try
+            {
+                cmbYear.Items.Clear();
+                cmbYear.Items.Add("Todos os anos");
+                foreach (var year in (results ?? new List<MediaItem>())
+                    .Where(item => item != null && item.Year.HasValue)
+                    .Select(item => item.Year.Value)
+                    .Distinct()
+                    .OrderByDescending(year => year))
+                {
+                    cmbYear.Items.Add(year.ToString());
+                }
+
+                cmbYear.SelectedIndex = 0;
+            }
+            finally
+            {
+                cmbYear.EndUpdate();
+            }
+        }
+
+        private void UpdateGenreOptions(IList<MediaItem> results)
+        {
+            var previousGenre = GetSelectedGenre();
+            var genres = (results ?? new List<MediaItem>())
+                .Where(item => item != null && item.Genres != null)
+                .SelectMany(item => item.Genres)
+                .Where(genre => !string.IsNullOrWhiteSpace(genre))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(genre => genre, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+
+            cmbGenre.BeginUpdate();
+            try
+            {
+                cmbGenre.Items.Clear();
+                cmbGenre.Items.Add("Todos os gêneros");
+                foreach (var genre in genres)
+                {
+                    cmbGenre.Items.Add(genre);
+                }
+
+                var selectedIndex = genres.FindIndex(genre =>
+                    string.Equals(genre, previousGenre, StringComparison.OrdinalIgnoreCase));
+                cmbGenre.SelectedIndex = selectedIndex >= 0 ? selectedIndex + 1 : 0;
+            }
+            finally
+            {
+                cmbGenre.EndUpdate();
+            }
+        }
+
+        private static string CreateCandidateKey(IList<MediaItem> candidates)
+        {
+            return string.Join("|", (candidates ?? new List<MediaItem>())
+                .Select(item => string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    "{0}:{1}",
+                    item.Id ?? string.Empty,
+                    item.MediaType)));
+        }
+
+        private List<MediaItem> SortSearchResults(IList<MediaItem> results)
+        {
+            var source = results ?? new List<MediaItem>();
+            switch (cmbSort.SelectedIndex)
+            {
+                case 1:
+                    return source
+                        .OrderByDescending(item => item.Year.HasValue)
+                        .ThenByDescending(item => item.Year ?? 0)
+                        .ThenBy(item => item.Title ?? string.Empty, StringComparer.CurrentCultureIgnoreCase)
+                        .ToList();
+                case 2:
+                    return source
+                        .OrderByDescending(item => item.Rating.HasValue)
+                        .ThenByDescending(item => item.Rating ?? 0D)
+                        .ThenBy(item => item.Title ?? string.Empty, StringComparer.CurrentCultureIgnoreCase)
+                        .ToList();
+                default:
+                    return source
+                        .OrderBy(item => item.Title ?? string.Empty, StringComparer.CurrentCultureIgnoreCase)
+                        .ToList();
+            }
+        }
+
+        private void RenderSearchResults(IList<MediaItem> results)
+        {
+            ClearResults();
+            foreach (var item in results ?? new List<MediaItem>())
+            {
+                flowResults.Controls.Add(CreateMediaCard(item));
+            }
         }
 
         private async Task<List<MediaItem>> ApplyOwnedServicesFilterAsync(IList<MediaItem> candidates)
@@ -381,6 +777,7 @@ namespace StreamFinder.WinForms
         private void btnFavorites_Click(object sender, EventArgs e)
         {
             currentView = MainViewMode.Favorites;
+            UpdateLoadMoreButton();
             ClearResults();
 
             var favorites = favoritesService.GetAll();
@@ -397,6 +794,7 @@ namespace StreamFinder.WinForms
         private void btnSearchNavigation_Click(object sender, EventArgs e)
         {
             currentView = MainViewMode.Search;
+            UpdateLoadMoreButton();
             ClearResults();
             txtSearch.Focus();
             toolStripStatusLabelMessage.Text = "Digite algo para pesquisar.";
@@ -410,6 +808,7 @@ namespace StreamFinder.WinForms
         private void LoadHistoryView()
         {
             currentView = MainViewMode.History;
+            UpdateLoadMoreButton();
             ClearResults();
 
             var history = searchHistoryService.GetAll();
