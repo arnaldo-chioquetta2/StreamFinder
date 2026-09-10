@@ -150,6 +150,7 @@ namespace StreamFinder.WinForms
             Controls.Add(panelTop);
             Controls.Add(panelSidebar);
             Controls.Add(statusStrip);
+            AcceptButton = btnSearch;
             Font = new System.Drawing.Font("Segoe UI", 10F);
             MinimumSize = new System.Drawing.Size(1000, 650);
             StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;

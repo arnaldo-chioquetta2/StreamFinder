@@ -684,9 +684,7 @@ namespace StreamFinder.WinForms.Services
                 Overview = result.Overview,
                 Year = ParseYear(date),
                 Rating = result.VoteAverage,
-                PosterUrl = string.IsNullOrWhiteSpace(result.PosterPath)
-                    ? null
-                    : PosterBaseUrl + result.PosterPath,
+                PosterUrl = BuildPosterUrl(result.PosterPath),
                 MediaType = mediaType,
                 Genres = TmdbGenreMapper.Map(mediaType, result.GenreIds)
             };
@@ -722,9 +720,19 @@ namespace StreamFinder.WinForms.Services
                 Rating = details.VoteAverage ?? original.Rating,
                 PosterUrl = string.IsNullOrWhiteSpace(details.PosterPath)
                     ? original.PosterUrl
-                    : PosterBaseUrl + details.PosterPath,
+                    : BuildPosterUrl(details.PosterPath),
                 Genres = ConvertGenres(original.Genres, details.Genres)
             };
+        }
+
+        private static string BuildPosterUrl(string posterPath)
+        {
+            if (string.IsNullOrWhiteSpace(posterPath))
+            {
+                return null;
+            }
+
+            return PosterBaseUrl.TrimEnd('/') + "/" + posterPath.TrimStart('/');
         }
 
         private static List<string> ConvertGenres(List<string> originalGenres, List<TmdbGenre> genres)
