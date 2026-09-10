@@ -18,6 +18,8 @@ namespace StreamFinder.WinForms
         private System.Windows.Forms.Label lblGenresValue;
         private System.Windows.Forms.Label lblOverview;
         private System.Windows.Forms.TextBox txtOverview;
+        private System.Windows.Forms.Label lblTrailerStatus;
+        private System.Windows.Forms.Button btnWatchTrailer;
         private System.Windows.Forms.Label lblAvailability;
         private System.Windows.Forms.Label lblAvailabilityStatus;
         private System.Windows.Forms.FlowLayoutPanel providerListPanel;
@@ -30,6 +32,7 @@ namespace StreamFinder.WinForms
             {
                 CancelPosterLoading();
                 CancelProvidersLoading();
+                CancelTrailerLoading();
                 if (picPoster != null && picPoster.Image != null)
                 {
                     picPoster.Image.Dispose();
@@ -63,6 +66,8 @@ namespace StreamFinder.WinForms
             lblGenresValue = new System.Windows.Forms.Label();
             lblOverview = new System.Windows.Forms.Label();
             txtOverview = new System.Windows.Forms.TextBox();
+            lblTrailerStatus = new System.Windows.Forms.Label();
+            btnWatchTrailer = new System.Windows.Forms.Button();
             lblAvailability = new System.Windows.Forms.Label();
             lblAvailabilityStatus = new System.Windows.Forms.Label();
             providerListPanel = new System.Windows.Forms.FlowLayoutPanel();
@@ -104,16 +109,28 @@ namespace StreamFinder.WinForms
             txtOverview.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
             txtOverview.Size = new System.Drawing.Size(525, 145);
             txtOverview.TabStop = false;
-            lblAvailability = CreateCaption("Onde assistir", 305, 425);
+            lblTrailerStatus.AutoEllipsis = true;
+            lblTrailerStatus.ForeColor = System.Drawing.Color.DimGray;
+            lblTrailerStatus.Location = new System.Drawing.Point(305, 425);
+            lblTrailerStatus.Size = new System.Drawing.Size(285, 30);
+            lblTrailerStatus.Text = "Buscando trailer...";
+            btnWatchTrailer.Enabled = false;
+            btnWatchTrailer.Font = new System.Drawing.Font("Segoe UI", 10F);
+            btnWatchTrailer.Location = new System.Drawing.Point(600, 422);
+            btnWatchTrailer.Size = new System.Drawing.Size(230, 34);
+            btnWatchTrailer.Text = "Assistir trailer";
+            btnWatchTrailer.UseVisualStyleBackColor = true;
+            btnWatchTrailer.Click += new System.EventHandler(btnWatchTrailer_Click);
+            lblAvailability = CreateCaption("Onde assistir", 305, 465);
             lblAvailabilityStatus.AutoEllipsis = true;
             lblAvailabilityStatus.ForeColor = System.Drawing.Color.DimGray;
-            lblAvailabilityStatus.Location = new System.Drawing.Point(305, 449);
+            lblAvailabilityStatus.Location = new System.Drawing.Point(305, 489);
             lblAvailabilityStatus.Size = new System.Drawing.Size(525, 20);
             lblAvailabilityStatus.Text = "Buscando disponibilidade...";
             providerListPanel.AutoScroll = true;
             providerListPanel.FlowDirection = System.Windows.Forms.FlowDirection.TopDown;
-            providerListPanel.Location = new System.Drawing.Point(305, 472);
-            providerListPanel.Size = new System.Drawing.Size(525, 105);
+            providerListPanel.Location = new System.Drawing.Point(305, 512);
+            providerListPanel.Size = new System.Drawing.Size(525, 65);
             providerListPanel.WrapContents = false;
             btnFavorite.Location = new System.Drawing.Point(605, 615);
             btnFavorite.Size = new System.Drawing.Size(110, 32);
@@ -127,6 +144,8 @@ namespace StreamFinder.WinForms
             btnClose.UseVisualStyleBackColor = true;
             Controls.Add(btnClose);
             Controls.Add(btnFavorite);
+            Controls.Add(btnWatchTrailer);
+            Controls.Add(lblTrailerStatus);
             Controls.Add(providerListPanel);
             Controls.Add(lblAvailabilityStatus);
             Controls.Add(lblAvailability);

@@ -78,6 +78,7 @@
     <Compile Include="Models\MediaType.cs" />
     <Compile Include="Models\SearchHistoryItem.cs" />
     <Compile Include="Models\StreamingProvider.cs" />
+    <Compile Include="Models\MediaTrailer.cs" />
     <Compile Include="Models\Tmdb\TmdbSearchResponse.cs" />
     <Compile Include="Models\Tmdb\TmdbSearchResult.cs" />
     <Compile Include="Models\Tmdb\TmdbGenre.cs" />
@@ -85,6 +86,8 @@
     <Compile Include="Models\Tmdb\TmdbWatchProviderDto.cs" />
     <Compile Include="Models\Tmdb\TmdbWatchProviderCountryDto.cs" />
     <Compile Include="Models\Tmdb\TmdbWatchProvidersResponse.cs" />
+    <Compile Include="Models\Tmdb\TmdbVideoResult.cs" />
+    <Compile Include="Models\Tmdb\TmdbVideosResponse.cs" />
     <Compile Include="Services\IniFileService.cs" />
     <Compile Include="Services\IAvailabilityFallbackSource.cs" />
     <Compile Include="Services\AvailabilityFallbackService.cs" />

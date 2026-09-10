@@ -24,8 +24,10 @@ namespace StreamFinder.WinForms
         private readonly HttpService httpService;
         private CancellationTokenSource posterCancellation;
         private CancellationTokenSource providersCancellation;
+        private CancellationTokenSource trailerCancellation;
         private readonly List<Image> providerImages = new List<Image>();
         private string currentPosterUrl;
+        private MediaTrailer selectedTrailer;
 
         public MediaDetailsForm(
             MediaItem media,
@@ -81,6 +83,7 @@ namespace StreamFinder.WinForms
 
             _ = EnrichDetailsAsync();
             _ = LoadWatchProvidersAsync();
+            _ = LoadTrailerAsync();
         }
 
         private void PopulateMediaDetails()
@@ -119,6 +122,131 @@ namespace StreamFinder.WinForms
             {
                 // Existing data remains usable when enrichment is unavailable.
             }
+        }
+
+        private async Task LoadTrailerAsync()
+        {
+            var source = new CancellationTokenSource();
+            trailerCancellation = source;
+            btnWatchTrailer.Enabled = false;
+            lblTrailerStatus.Text = "Buscando trailer...";
+
+            try
+            {
+                var trailer = await tmdbService.GetBestTrailerAsync(media, source.Token);
+                if (source.IsCancellationRequested || IsDisposed || Disposing)
+                {
+                    return;
+                }
+
+                selectedTrailer = trailer;
+                btnWatchTrailer.Enabled = trailer != null && IsValidYouTubeUrl(trailer.WatchUrl, trailer.Key);
+                lblTrailerStatus.Text = trailer == null
+                    ? "Trailer n\u00e3o encontrado."
+                    : GetTrailerStatus(trailer);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception)
+            {
+                if (!IsDisposed && !Disposing)
+                {
+                    selectedTrailer = null;
+                    btnWatchTrailer.Enabled = false;
+                    lblTrailerStatus.Text = "N\u00e3o foi poss\u00edvel carregar o trailer.";
+                }
+            }
+            finally
+            {
+                if (ReferenceEquals(trailerCancellation, source))
+                {
+                    trailerCancellation = null;
+                    source.Dispose();
+                }
+            }
+        }
+
+        private static string GetTrailerStatus(MediaTrailer trailer)
+        {
+            if (trailer.IsProbablyDubbed &&
+                (string.Equals(trailer.Language, "pt", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(trailer.Country, "BR", StringComparison.OrdinalIgnoreCase) ||
+                 (trailer.Name ?? string.Empty).IndexOf("brasil", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 (trailer.Name ?? string.Empty).IndexOf("brasileir", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return "Trailer possivelmente dublado em Portugu\u00eas (Brasil)";
+            }
+
+            if (trailer.IsProbablyDubbed)
+            {
+                return "Trailer possivelmente dublado em Portugu\u00eas";
+            }
+
+            if (string.Equals(trailer.Language, "pt", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(trailer.Country, "BR", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Trailer em Portugu\u00eas (Brasil)";
+            }
+
+            if (string.Equals(trailer.Language, "pt", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Trailer em Portugu\u00eas";
+            }
+
+            return "Trailer dispon\u00edvel";
+        }
+
+        private void btnWatchTrailer_Click(object sender, EventArgs e)
+        {
+            if (selectedTrailer == null || !IsValidYouTubeUrl(selectedTrailer.WatchUrl, selectedTrailer.Key))
+            {
+                return;
+            }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = selectedTrailer.WatchUrl,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception)
+            {
+                // Browser launch failures must not interrupt the details screen.
+            }
+        }
+
+        private static bool IsValidYouTubeUrl(string url, string key)
+        {
+            if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(key) ||
+                key.Trim() != key || key.Length < 6 || key.Length > 64)
+            {
+                return false;
+            }
+
+            foreach (var character in key)
+            {
+                if (!(char.IsLetterOrDigit(character) || character == '_' || character == '-'))
+                {
+                    return false;
+                }
+            }
+
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri) ||
+                uri.Scheme != Uri.UriSchemeHttps ||
+                !string.Equals(uri.Host, "www.youtube.com", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(uri.AbsolutePath, "/watch", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return string.Equals(
+                uri.AbsoluteUri,
+                "https://www.youtube.com/watch?v=" + key,
+                StringComparison.Ordinal);
         }
 
         private async Task LoadWatchProvidersAsync()
@@ -436,6 +564,18 @@ namespace StreamFinder.WinForms
             providersCancellation.Cancel();
             providersCancellation.Dispose();
             providersCancellation = null;
+        }
+
+        private void CancelTrailerLoading()
+        {
+            if (trailerCancellation == null)
+            {
+                return;
+            }
+
+            trailerCancellation.Cancel();
+            trailerCancellation.Dispose();
+            trailerCancellation = null;
         }
 
         private void UpdateFavoriteButton()

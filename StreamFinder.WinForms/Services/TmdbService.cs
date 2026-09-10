@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Text;
 using Newtonsoft.Json;
 using StreamFinder.WinForms.Models;
 using StreamFinder.WinForms.Models.Tmdb;
@@ -194,6 +198,287 @@ namespace StreamFinder.WinForms.Services
             }
 
             return ConvertDetails(media, details);
+        }
+
+        public Task<MediaTrailer> GetBestTrailerAsync(MediaItem media)
+        {
+            return GetBestTrailerAsync(media, CancellationToken.None);
+        }
+
+        public async Task<MediaTrailer> GetBestTrailerAsync(MediaItem media, CancellationToken cancellationToken)
+        {
+            if (media == null)
+            {
+                throw new ArgumentNullException("media");
+            }
+
+            int mediaId;
+            if (!int.TryParse(media.Id, NumberStyles.Integer, CultureInfo.InvariantCulture, out mediaId) || mediaId <= 0)
+            {
+                throw new ArgumentException("O ID do item de m\u00eddia \u00e9 inv\u00e1lido.", "media");
+            }
+
+            var mediaType = GetTmdbMediaType(media);
+            var settings = iniFileService.LoadSettings();
+            if (string.IsNullOrWhiteSpace(settings.TmdbApiKey))
+            {
+                throw new InvalidOperationException("Configure sua chave do TMDb em Configura\u00e7\u00f5es.");
+            }
+
+            var localizedVideos = await GetVideosAsync(
+                mediaType,
+                mediaId,
+                settings.TmdbApiKey,
+                settings.CacheHours,
+                "pt-BR",
+                cancellationToken).ConfigureAwait(false);
+            var trailer = SelectBestTrailer(localizedVideos);
+            if (trailer != null)
+            {
+                return trailer;
+            }
+
+            var fallbackVideos = await GetVideosAsync(
+                mediaType,
+                mediaId,
+                settings.TmdbApiKey,
+                settings.CacheHours,
+                null,
+                cancellationToken).ConfigureAwait(false);
+            return SelectBestTrailer(fallbackVideos);
+        }
+
+        private async Task<List<TmdbVideoResult>> GetVideosAsync(
+            string mediaType,
+            int mediaId,
+            string apiKey,
+            int cacheHours,
+            string language,
+            CancellationToken cancellationToken)
+        {
+            var languageKey = string.IsNullOrWhiteSpace(language) ? "default" : language;
+            var cacheKey = string.Format(
+                CultureInfo.InvariantCulture,
+                "tmdb-videos|{0}|{1}|{2}",
+                mediaType,
+                mediaId,
+                languageKey);
+
+            string json;
+            if (!cacheService.TryGet(cacheKey, cacheHours, out json))
+            {
+                var languageQuery = string.IsNullOrWhiteSpace(language)
+                    ? string.Empty
+                    : "&language=" + Uri.EscapeDataString(language);
+                var url = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}/{1}/{2}/videos?api_key={3}{4}",
+                    DetailsBaseUrl,
+                    mediaType,
+                    mediaId,
+                    Uri.EscapeDataString(apiKey),
+                    languageQuery);
+
+                json = await httpService.GetJsonAsync(url, cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(json))
+                {
+                    try
+                    {
+                        cacheService.Set(cacheKey, json);
+                    }
+                    catch (CachePersistenceException)
+                    {
+                        // A cache write failure must not invalidate a valid API response.
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new List<TmdbVideoResult>();
+            }
+
+            var response = JsonConvert.DeserializeObject<TmdbVideosResponse>(json);
+            return response == null || response.Results == null
+                ? new List<TmdbVideoResult>()
+                : response.Results;
+        }
+
+        private static string GetTmdbMediaType(MediaItem media)
+        {
+            if (media.MediaType == MediaType.Movie)
+            {
+                return "movie";
+            }
+
+            if (media.MediaType == MediaType.Tv)
+            {
+                return "tv";
+            }
+
+            throw new ArgumentException("O tipo do item de m\u00eddia \u00e9 inv\u00e1lido.", "media");
+        }
+
+        private static MediaTrailer SelectBestTrailer(IList<TmdbVideoResult> videos)
+        {
+            var candidates = (videos ?? new List<TmdbVideoResult>())
+                .Where(video => video != null &&
+                    string.Equals(video.Site, "YouTube", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(video.Type, "Trailer", StringComparison.OrdinalIgnoreCase) &&
+                    IsValidYouTubeKey(video.Key))
+                .Select(video => new
+                {
+                    Video = video,
+                    Score = GetTrailerScore(video)
+                })
+                .OrderByDescending(item => item.Score)
+                .ThenByDescending(item => item.Video.Official)
+                .ThenByDescending(item => ParsePublishedAt(item.Video.PublishedAt) ?? DateTime.MinValue)
+                .ToList();
+
+            if (candidates.Count == 0)
+            {
+                return null;
+            }
+
+            var selected = candidates[0].Video;
+            return new MediaTrailer
+            {
+                Id = selected.Id,
+                Name = selected.Name,
+                Site = selected.Site,
+                Key = selected.Key.Trim(),
+                Language = selected.Language,
+                Country = selected.Country,
+                IsOfficial = selected.Official,
+                IsProbablyDubbed = IsProbablyDubbed(selected),
+                Type = selected.Type,
+                PublishedAt = ParsePublishedAt(selected.PublishedAt),
+                WatchUrl = "https://www.youtube.com/watch?v=" + selected.Key.Trim()
+            };
+        }
+
+        private static int GetTrailerScore(TmdbVideoResult video)
+        {
+            var probablyDubbed = IsProbablyDubbed(video);
+            var brazilianContext = HasBrazilianPortugueseContext(video);
+            if (probablyDubbed && brazilianContext)
+            {
+                return 800;
+            }
+
+            if (probablyDubbed)
+            {
+                return 700;
+            }
+
+            var language = (video.Language ?? string.Empty).Trim();
+            var country = (video.Country ?? string.Empty).Trim();
+            if (string.Equals(language, "pt", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(country, "BR", StringComparison.OrdinalIgnoreCase))
+            {
+                return video.Official ? 600 : 500;
+            }
+
+            if (string.Equals(language, "pt", StringComparison.OrdinalIgnoreCase))
+            {
+                return video.Official ? 400 : 300;
+            }
+
+            if (video.Official)
+            {
+                return 200;
+            }
+
+            return 100;
+        }
+
+        private static bool IsProbablyDubbed(TmdbVideoResult video)
+        {
+            if (video == null)
+            {
+                return false;
+            }
+
+            var name = NormalizeTrailerText(video.Name);
+            if (string.IsNullOrWhiteSpace(name) || ContainsSubtitleIndicator(name))
+            {
+                return false;
+            }
+
+            var hasDubIndicator = name.Contains("dublado") ||
+                name.Contains("dublada") ||
+                name.Contains("dublagem") ||
+                name.Contains("versao dublada") ||
+                name.Contains("versao brasileira") ||
+                name.Contains("portugues brasil") ||
+                name.Contains("portugues brasileiro") ||
+                name.Contains("pt br");
+
+            return hasDubIndicator &&
+                (string.Equals(video.Language, "pt", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(video.Country, "BR", StringComparison.OrdinalIgnoreCase) ||
+                 HasBrazilianPortugueseContext(video));
+        }
+
+        private static bool HasBrazilianPortugueseContext(TmdbVideoResult video)
+        {
+            var name = NormalizeTrailerText(video == null ? null : video.Name);
+            return string.Equals(video == null ? null : video.Language, "pt", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(video == null ? null : video.Country, "BR", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("portugues brasil") ||
+                name.Contains("portugues brasileiro") ||
+                name.Contains("versao brasileira") ||
+                name.Contains("pt br");
+        }
+
+        private static bool ContainsSubtitleIndicator(string normalizedName)
+        {
+            return normalizedName.Contains("legendado") ||
+                normalizedName.Contains("legendada") ||
+                normalizedName.Contains("legenda") ||
+                normalizedName.Contains("subtitled") ||
+                normalizedName.Contains("subtitles");
+        }
+
+        private static string NormalizeTrailerText(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var decomposed = value.Normalize(NormalizationForm.FormD);
+            var builder = new StringBuilder(decomposed.Length);
+            foreach (var character in decomposed)
+            {
+                if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark)
+                {
+                    continue;
+                }
+
+                builder.Append(character == '-' || character == '_' ? ' ' : char.ToLowerInvariant(character));
+            }
+
+            return Regex.Replace(builder.ToString(), "\\s+", " ").Trim();
+        }
+
+        private static DateTime? ParsePublishedAt(string value)
+        {
+            DateTime parsed;
+            return DateTime.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out parsed)
+                ? parsed
+                : (DateTime?)null;
+        }
+
+        private static bool IsValidYouTubeKey(string key)
+        {
+            return !string.IsNullOrWhiteSpace(key) &&
+                Regex.IsMatch(key.Trim(), "^[A-Za-z0-9_-]{6,64}$");
         }
 
         public async Task<List<MediaAvailability>> GetWatchProvidersAsync(MediaItem media)
