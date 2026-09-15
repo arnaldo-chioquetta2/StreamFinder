@@ -70,7 +70,6 @@ namespace StreamFinder.WinForms.Services
                 "tmdb-search-multi|{0}|pt-BR|BR|{1}",
                 normalizedQuery.ToLowerInvariant(),
                 pagedResult.Page);
-
             string json;
             if (!cacheService.TryGet(cacheKey, settings.CacheHours, out json))
             {
@@ -123,6 +122,253 @@ namespace StreamFinder.WinForms.Services
             return pagedResult;
         }
 
+        public Task<List<TmdbGenre>> GetMovieGenresAsync(CancellationToken cancellationToken)
+        {
+            return GetGenresAsync(MediaType.Movie, cancellationToken);
+        }
+
+        public Task<List<TmdbGenre>> GetTvGenresAsync(CancellationToken cancellationToken)
+        {
+            return GetGenresAsync(MediaType.Tv, cancellationToken);
+        }
+
+        public async Task<List<DiscoveryGenreOption>> GetDiscoveryGenresAsync(CancellationToken cancellationToken)
+        {
+            var genreLists = await Task.WhenAll(
+                GetMovieGenresAsync(cancellationToken),
+                GetTvGenresAsync(cancellationToken)).ConfigureAwait(false);
+
+            var options = new Dictionary<string, DiscoveryGenreOption>(StringComparer.OrdinalIgnoreCase);
+            AddDiscoveryGenres(options, genreLists[0], true);
+            AddDiscoveryGenres(options, genreLists[1], false);
+
+            return options.Values
+                .OrderBy(option => option.Name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+        }
+
+        public Task<PagedMediaResult> DiscoverMoviesPageAsync(
+            int? genreId,
+            DiscoverySortOption sortOption,
+            int page,
+            CancellationToken cancellationToken,
+            DiscoveryLanguageOption languageOption = DiscoveryLanguageOption.Any,
+            DateTime? releaseDateFrom = null,
+            DateTime? releaseDateTo = null)
+        {
+            return DiscoverPageAsync(MediaType.Movie, genreId, sortOption, page, cancellationToken, languageOption, releaseDateFrom, releaseDateTo);
+        }
+
+        public Task<PagedMediaResult> DiscoverTvPageAsync(
+            int? genreId,
+            DiscoverySortOption sortOption,
+            int page,
+            CancellationToken cancellationToken,
+            DiscoveryLanguageOption languageOption = DiscoveryLanguageOption.Any,
+            DateTime? releaseDateFrom = null,
+            DateTime? releaseDateTo = null)
+        {
+            return DiscoverPageAsync(MediaType.Tv, genreId, sortOption, page, cancellationToken, languageOption, releaseDateFrom, releaseDateTo);
+        }
+
+        private async Task<List<TmdbGenre>> GetGenresAsync(MediaType mediaType, CancellationToken cancellationToken)
+        {
+            var settings = iniFileService.LoadSettings();
+            if (string.IsNullOrWhiteSpace(settings.TmdbApiKey))
+            {
+                throw new InvalidOperationException("Configure sua chave do TMDb em Configurações.");
+            }
+
+            var mediaTypeName = GetMediaTypeName(mediaType);
+            var cacheKey = string.Format(
+                CultureInfo.InvariantCulture,
+                "tmdb-genres|{0}|pt-BR",
+                mediaTypeName);
+
+            string json;
+            if (!cacheService.TryGet(cacheKey, settings.CacheHours, out json))
+            {
+                var url = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}/genre/{1}/list?api_key={2}&language=pt-BR",
+                    DetailsBaseUrl,
+                    mediaTypeName,
+                    Uri.EscapeDataString(settings.TmdbApiKey));
+                json = await httpService.GetJsonAsync(url, cancellationToken).ConfigureAwait(false);
+                SaveCacheSafely(cacheKey, json);
+            }
+
+            var response = JsonConvert.DeserializeObject<TmdbGenreListResponse>(json);
+            return response == null || response.Genres == null
+                ? new List<TmdbGenre>()
+                : response.Genres
+                    .Where(genre => genre != null && genre.Id > 0 && !string.IsNullOrWhiteSpace(genre.Name))
+                    .ToList();
+        }
+
+        private async Task<PagedMediaResult> DiscoverPageAsync(
+            MediaType mediaType,
+            int? genreId,
+            DiscoverySortOption sortOption,
+            int page,
+            CancellationToken cancellationToken,
+            DiscoveryLanguageOption languageOption,
+            DateTime? releaseDateFrom,
+            DateTime? releaseDateTo)
+        {
+            var pagedResult = new PagedMediaResult
+            {
+                Page = page < 1 ? 1 : page
+            };
+
+            var settings = iniFileService.LoadSettings();
+            if (string.IsNullOrWhiteSpace(settings.TmdbApiKey))
+            {
+                throw new InvalidOperationException("Configure sua chave do TMDb em Configurações.");
+            }
+
+            var mediaTypeName = GetMediaTypeName(mediaType);
+            var sortBy = GetDiscoverySortBy(mediaType, sortOption);
+            var normalizedGenreId = genreId.GetValueOrDefault() > 0 ? genreId.Value : (int?)null;
+            var cacheKey = string.Format(
+                CultureInfo.InvariantCulture,
+                "tmdb-discover|{0}|genre={1}|sort={2}|page={3}|original-language={4}|from={5}|to={6}|pt-BR|BR",
+                mediaTypeName,
+                normalizedGenreId.HasValue ? normalizedGenreId.Value.ToString(CultureInfo.InvariantCulture) : "all",
+                sortBy,
+                pagedResult.Page,
+                languageOption == DiscoveryLanguageOption.PortugueseOriginal ? "pt" : "any",
+                sortOption == DiscoverySortOption.ReleaseDate && releaseDateFrom.HasValue ? releaseDateFrom.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "none",
+                sortOption == DiscoverySortOption.ReleaseDate && releaseDateTo.HasValue ? releaseDateTo.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "none");
+
+            string json;
+            if (!cacheService.TryGet(cacheKey, settings.CacheHours, out json))
+            {
+                var genreParameter = normalizedGenreId.HasValue
+                    ? "&with_genres=" + normalizedGenreId.Value.ToString(CultureInfo.InvariantCulture)
+                    : string.Empty;
+                var regionParameter = mediaType == MediaType.Movie ? "&region=BR" : string.Empty;
+                var originalLanguageParameter = languageOption == DiscoveryLanguageOption.PortugueseOriginal ? "&with_original_language=pt" : string.Empty;
+                var releaseDateFromParameter = sortOption == DiscoverySortOption.ReleaseDate && releaseDateFrom.HasValue ? "&" + (mediaType == MediaType.Movie ? "primary_release_date.gte" : "first_air_date.gte") + "=" + releaseDateFrom.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : string.Empty;
+                var releaseDateToParameter = sortOption == DiscoverySortOption.ReleaseDate && releaseDateTo.HasValue ? "&" + (mediaType == MediaType.Movie ? "primary_release_date.lte" : "first_air_date.lte") + "=" + releaseDateTo.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : string.Empty;
+                var url = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}/discover/{1}?api_key={2}&language=pt-BR&page={3}&sort_by={4}{5}{6}{7}{8}{9}",
+                    DetailsBaseUrl,
+                    mediaTypeName,
+                    Uri.EscapeDataString(settings.TmdbApiKey),
+                    pagedResult.Page,
+                    Uri.EscapeDataString(sortBy),
+                    regionParameter,
+                    genreParameter,
+                    originalLanguageParameter,
+                    releaseDateFromParameter,
+                    releaseDateToParameter);
+                json = await httpService.GetJsonAsync(url, cancellationToken).ConfigureAwait(false);
+                SaveCacheSafely(cacheKey, json);
+            }
+
+            var response = JsonConvert.DeserializeObject<TmdbSearchResponse>(json);
+            if (response == null)
+            {
+                return pagedResult;
+            }
+
+            pagedResult.Page = response.Page < 1 ? pagedResult.Page : response.Page;
+            pagedResult.TotalPages = response.TotalPages < 0 ? 0 : response.TotalPages;
+            pagedResult.TotalResults = response.TotalResults < 0 ? 0 : response.TotalResults;
+            if (response.Results == null)
+            {
+                return pagedResult;
+            }
+
+            foreach (var result in response.Results)
+            {
+                var item = ConvertResult(result, mediaType);
+                if (item != null)
+                {
+                    pagedResult.Items.Add(item);
+                }
+            }
+
+            return pagedResult;
+        }
+
+        private static void AddDiscoveryGenres(
+            IDictionary<string, DiscoveryGenreOption> options,
+            IEnumerable<TmdbGenre> genres,
+            bool isMovie)
+        {
+            foreach (var genre in genres ?? Enumerable.Empty<TmdbGenre>())
+            {
+                if (genre == null || genre.Id <= 0 || string.IsNullOrWhiteSpace(genre.Name))
+                {
+                    continue;
+                }
+
+                var name = genre.Name.Trim();
+                DiscoveryGenreOption option;
+                if (!options.TryGetValue(name, out option))
+                {
+                    option = new DiscoveryGenreOption { Name = name };
+                    options.Add(name, option);
+                }
+
+                if (isMovie)
+                {
+                    option.MovieGenreId = genre.Id;
+                }
+                else
+                {
+                    option.TvGenreId = genre.Id;
+                }
+            }
+        }
+
+        private static string GetMediaTypeName(MediaType mediaType)
+        {
+            if (mediaType == MediaType.Movie)
+            {
+                return "movie";
+            }
+
+            if (mediaType == MediaType.Tv)
+            {
+                return "tv";
+            }
+
+            throw new ArgumentException("O tipo de mídia é inválido.", "mediaType");
+        }
+
+        private static string GetDiscoverySortBy(MediaType mediaType, DiscoverySortOption sortOption)
+        {
+            switch (sortOption)
+            {
+                case DiscoverySortOption.VoteAverage:
+                    return "vote_average.desc";
+                case DiscoverySortOption.Title:
+                    return mediaType == MediaType.Movie ? "original_title.asc" : "original_name.asc";
+                default:
+                    return mediaType == MediaType.Movie ? "primary_release_date.desc" : "first_air_date.desc";
+            }
+        }
+
+        private void SaveCacheSafely(string cacheKey, string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+
+            try
+            {
+                cacheService.Set(cacheKey, json);
+            }
+            catch (CachePersistenceException)
+            {
+                // A cache write failure must not invalidate a valid API response.
+            }
+        }
         public async Task<MediaItem> GetDetailsAsync(MediaItem media)
         {
             if (media == null)
@@ -642,35 +888,32 @@ namespace StreamFinder.WinForms.Services
 
         private static MediaItem ConvertResult(TmdbSearchResult result)
         {
+            if (result == null)
+            {
+                return null;
+            }
+
+            if (string.Equals(result.MediaType, "movie", StringComparison.OrdinalIgnoreCase))
+            {
+                return ConvertResult(result, MediaType.Movie);
+            }
+
+            if (string.Equals(result.MediaType, "tv", StringComparison.OrdinalIgnoreCase))
+            {
+                return ConvertResult(result, MediaType.Tv);
+            }
+
+            return null;
+        }
+
+        private static MediaItem ConvertResult(TmdbSearchResult result, MediaType mediaType)
+        {
             if (result == null || result.Id <= 0)
             {
                 return null;
             }
 
-            MediaType mediaType;
-            string title;
-            string originalTitle;
-            string date;
-
-            if (string.Equals(result.MediaType, "movie", StringComparison.OrdinalIgnoreCase))
-            {
-                mediaType = MediaType.Movie;
-                title = result.Title;
-                originalTitle = result.OriginalTitle;
-                date = result.ReleaseDate;
-            }
-            else if (string.Equals(result.MediaType, "tv", StringComparison.OrdinalIgnoreCase))
-            {
-                mediaType = MediaType.Tv;
-                title = result.Name;
-                originalTitle = result.OriginalName;
-                date = result.FirstAirDate;
-            }
-            else
-            {
-                return null;
-            }
-
+            var title = mediaType == MediaType.Movie ? result.Title : result.Name;
             if (string.IsNullOrWhiteSpace(title))
             {
                 return null;
@@ -680,14 +923,24 @@ namespace StreamFinder.WinForms.Services
             {
                 Id = result.Id.ToString(CultureInfo.InvariantCulture),
                 Title = title,
-                OriginalTitle = originalTitle,
+                OriginalTitle = mediaType == MediaType.Movie ? result.OriginalTitle : result.OriginalName,
                 Overview = result.Overview,
-                Year = ParseYear(date),
+                OriginalLanguage = result.OriginalLanguage,
+                ReleaseDate = ParseReleaseDate(mediaType == MediaType.Movie ? result.ReleaseDate : result.FirstAirDate),
+                Year = ParseYear(mediaType == MediaType.Movie ? result.ReleaseDate : result.FirstAirDate),
                 Rating = result.VoteAverage,
                 PosterUrl = BuildPosterUrl(result.PosterPath),
                 MediaType = mediaType,
                 Genres = TmdbGenreMapper.Map(mediaType, result.GenreIds)
             };
+        }
+
+        private static DateTime? ParseReleaseDate(string date)
+        {
+            DateTime parsedDate;
+            return DateTime.TryParseExact(date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out parsedDate)
+                ? parsedDate
+                : (DateTime?)null;
         }
 
         private static int? ParseYear(string date)
@@ -716,6 +969,8 @@ namespace StreamFinder.WinForms.Services
                 Title = string.IsNullOrWhiteSpace(title) ? original.Title : title,
                 OriginalTitle = string.IsNullOrWhiteSpace(originalTitle) ? original.OriginalTitle : originalTitle,
                 Overview = string.IsNullOrWhiteSpace(details.Overview) ? original.Overview : details.Overview,
+                OriginalLanguage = original.OriginalLanguage,
+                ReleaseDate = ParseReleaseDate(date) ?? original.ReleaseDate,
                 Year = ParseYear(date) ?? original.Year,
                 Rating = details.VoteAverage ?? original.Rating,
                 PosterUrl = string.IsNullOrWhiteSpace(details.PosterPath)

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace StreamFinder.WinForms.Models
@@ -8,7 +9,9 @@ namespace StreamFinder.WinForms.Models
         public string Title { get; set; }
         public string OriginalTitle { get; set; }
         public string Overview { get; set; }
+        public string OriginalLanguage { get; set; }
         public int? Year { get; set; }
+        public DateTime? ReleaseDate { get; set; }
         public double? Rating { get; set; }
         public string PosterUrl { get; set; }
         public MediaType MediaType { get; set; }

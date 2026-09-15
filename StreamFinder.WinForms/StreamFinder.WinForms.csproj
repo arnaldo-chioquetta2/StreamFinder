@@ -7,6 +7,7 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>StreamFinder.WinForms</RootNamespace>
     <AssemblyName>StreamFinder.WinForms</AssemblyName>
+    <ApplicationIcon>..\IconeFilmes.ico</ApplicationIcon>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <RuntimeIdentifiers>win</RuntimeIdentifiers>
     <FileAlignment>512</FileAlignment>
@@ -75,6 +76,9 @@
     <Compile Include="Models\MediaAvailability.cs" />
     <Compile Include="Models\MediaItem.cs" />
     <Compile Include="Models\PagedMediaResult.cs" />
+    <Compile Include="Models\DiscoveryGenreOption.cs" />
+    <Compile Include="Models\DiscoverySortOption.cs" />
+    <Compile Include="Models\DiscoveryLanguageOption.cs" />
     <Compile Include="Models\MediaType.cs" />
     <Compile Include="Models\SearchHistoryItem.cs" />
     <Compile Include="Models\StreamingProvider.cs" />
@@ -82,6 +86,7 @@
     <Compile Include="Models\Tmdb\TmdbSearchResponse.cs" />
     <Compile Include="Models\Tmdb\TmdbSearchResult.cs" />
     <Compile Include="Models\Tmdb\TmdbGenre.cs" />
+    <Compile Include="Models\Tmdb\TmdbGenreListResponse.cs" />
     <Compile Include="Models\Tmdb\TmdbDetailsResponse.cs" />
     <Compile Include="Models\Tmdb\TmdbWatchProviderDto.cs" />
     <Compile Include="Models\Tmdb\TmdbWatchProviderCountryDto.cs" />
@@ -103,6 +108,9 @@
     <EmbeddedResource Include="MainForm.resx">
       <DependentUpon>MainForm.cs</DependentUpon>
     </EmbeddedResource>
+    <None Include="..\IconeFilmes.ico">
+      <Link>IconeFilmes.ico</Link>
+    </None>
     <EmbeddedResource Include="MediaCardControl.resx">
       <DependentUpon>MediaCardControl.cs</DependentUpon>
     </EmbeddedResource>

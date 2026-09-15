@@ -16,7 +16,8 @@ namespace StreamFinder.WinForms
         {
             Search,
             Favorites,
-            History
+            History,
+            Discovery
         }
 
         private readonly TmdbService tmdbService;
@@ -38,6 +39,17 @@ namespace StreamFinder.WinForms
         private int searchOperationVersion;
         private bool isLoadingMore;
         private MainViewMode currentView;
+        private CancellationTokenSource discoveryCancellation;
+        private int discoveryOperationVersion;
+        private List<MediaItem> discoveryAccumulatedItems = new List<MediaItem>();
+        private int discoveryCurrentPage;
+        private int discoveryTotalPages;
+        private int discoveryTotalResults;
+        private List<DiscoveryGenreOption> discoveryGenres;
+        private bool isLoadingDiscovery;
+        private bool isUpdatingDiscoveryControls;
+        private DateTime? discoveryReleaseDateFrom;
+        private DateTime? discoveryReleaseDateTo;
 
         public MainForm()
         {
@@ -57,6 +69,397 @@ namespace StreamFinder.WinForms
             UpdateLoadMoreButton();
         }
 
+        private async void btnDiscoverNavigation_Click(object sender, EventArgs e)
+        {
+            await EnterDiscoveryModeAsync();
+        }
+
+        private async Task EnterDiscoveryModeAsync()
+        {
+            searchOperationVersion++;
+            CancelFilterOperation();
+            InvalidateDiscoveryOperation();
+            currentView = MainViewMode.Discovery;
+            ConfigureDiscoveryControls();
+            ClearResults();
+            discoveryAccumulatedItems = new List<MediaItem>();
+            discoveryCurrentPage = 0;
+            discoveryTotalPages = 0;
+            discoveryTotalResults = 0;
+            discoveryReleaseDateTo = DateTime.Today;
+            discoveryReleaseDateFrom = discoveryReleaseDateTo.Value.AddMonths(-12);
+            UpdateLoadMoreButton();
+
+            if (discoveryGenres == null)
+            {
+                var version = discoveryOperationVersion;
+                discoveryCancellation = new CancellationTokenSource();
+                var token = discoveryCancellation.Token;
+                btnDiscover.Enabled = false;
+                toolStripStatusLabelMessage.Text = "Carregando gêneros...";
+                try
+                {
+                    var genres = await tmdbService.GetDiscoveryGenresAsync(token);
+                    if (version != discoveryOperationVersion || currentView != MainViewMode.Discovery)
+                    {
+                        return;
+                    }
+
+                    discoveryGenres = genres ?? new List<DiscoveryGenreOption>();
+                    PopulateDiscoveryGenreOptions();
+                    toolStripStatusLabelMessage.Text = "Selecione os filtros e clique em Descobrir.";
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception)
+                {
+                    if (version == discoveryOperationVersion && currentView == MainViewMode.Discovery)
+                    {
+                        discoveryGenres = new List<DiscoveryGenreOption>();
+                        PopulateDiscoveryGenreOptions();
+                        toolStripStatusLabelMessage.Text = "Não foi possível carregar os gêneros.";
+                    }
+                }
+                finally
+                {
+                    if (version == discoveryOperationVersion && !IsDisposed && !Disposing)
+                    {
+                        discoveryCancellation.Dispose();
+                        discoveryCancellation = null;
+                        btnDiscover.Enabled = true;
+                    }
+                }
+            }
+            else
+            {
+                PopulateDiscoveryGenreOptions();
+                toolStripStatusLabelMessage.Text = "Selecione os filtros e clique em Descobrir.";
+            }
+        }
+
+        private void ConfigureDiscoveryControls()
+        {
+            isUpdatingDiscoveryControls = true;
+            try
+            {
+                txtSearch.Enabled = false;
+                btnSearch.Enabled = false;
+                chkOwnedOnly.Enabled = false;
+                btnDiscover.Visible = true;
+                lblDiscoveryLanguage.Visible = true;
+                cmbDiscoveryLanguage.Visible = true;
+                btnDiscover.Enabled = true;
+                SetDiscoverySortOptions();
+                PopulateDiscoveryGenreOptions();
+            }
+            finally
+            {
+                isUpdatingDiscoveryControls = false;
+            }
+        }
+
+        private void ConfigureSearchControls()
+        {
+            isUpdatingDiscoveryControls = true;
+            try
+            {
+                txtSearch.Enabled = true;
+                btnSearch.Enabled = true;
+                chkOwnedOnly.Enabled = true;
+                btnDiscover.Visible = false;
+                lblDiscoveryLanguage.Visible = false;
+                cmbDiscoveryLanguage.Visible = false;
+                SetSearchSortOptions();
+                UpdateGenreOptions(lastSearchResults);
+            }
+            finally
+            {
+                isUpdatingDiscoveryControls = false;
+            }
+        }
+
+        private void SetDiscoverySortOptions()
+        {
+            var selected = cmbSort.SelectedItem == null ? null : cmbSort.SelectedItem.ToString();
+            cmbSort.Items.Clear();
+            cmbSort.Items.Add("Lançamentos");
+            cmbSort.Items.Add("Melhor avaliados");
+            cmbSort.Items.Add("Título");
+            cmbSort.SelectedIndex = selected == "Melhor avaliados" ? 1 : selected == "Título" ? 2 : 0;
+        }
+
+        private void SetSearchSortOptions()
+        {
+            cmbSort.Items.Clear();
+            cmbSort.Items.Add("Título");
+            cmbSort.Items.Add("Ano");
+            cmbSort.Items.Add("Nota");
+            cmbSort.SelectedIndex = 0;
+        }
+
+        private void PopulateDiscoveryGenreOptions()
+        {
+            var selectedName = cmbGenre.SelectedItem == null ? null : cmbGenre.SelectedItem.ToString();
+            cmbGenre.Items.Clear();
+            cmbGenre.Items.Add("Todos os gêneros");
+            if (discoveryGenres != null)
+            {
+                foreach (var genre in discoveryGenres.OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    if (genre != null && !string.IsNullOrWhiteSpace(genre.Name))
+                    {
+                        cmbGenre.Items.Add(genre);
+                    }
+                }
+            }
+
+            var selectedIndex = 0;
+            for (var i = 1; i < cmbGenre.Items.Count; i++)
+            {
+                if (string.Equals(cmbGenre.Items[i].ToString(), selectedName, StringComparison.CurrentCultureIgnoreCase))
+                {
+                    selectedIndex = i;
+                    break;
+                }
+            }
+            cmbGenre.SelectedIndex = selectedIndex;
+        }
+
+        private DiscoveryGenreOption GetSelectedDiscoveryGenre()
+        {
+            return cmbGenre.SelectedIndex > 0 ? cmbGenre.SelectedItem as DiscoveryGenreOption : null;
+        }
+
+        private DiscoverySortOption GetSelectedDiscoverySort()
+        {
+            switch (cmbSort.SelectedIndex)
+            {
+                case 1: return DiscoverySortOption.VoteAverage;
+                case 2: return DiscoverySortOption.Title;
+                default: return DiscoverySortOption.ReleaseDate;
+            }
+        }
+
+        private DiscoveryLanguageOption GetSelectedDiscoveryLanguage()
+        {
+            if (cmbDiscoveryLanguage.SelectedIndex == 1) return DiscoveryLanguageOption.PortugueseOriginal;
+            if (cmbDiscoveryLanguage.SelectedIndex == 2) return DiscoveryLanguageOption.PortugueseOriginalOrProbablyDubbed;
+            return DiscoveryLanguageOption.Any;
+        }
+
+        private int GetSelectedDiscoveryType()
+        {
+            return cmbMediaType.SelectedIndex;
+        }
+
+        private async void btnDiscover_Click(object sender, EventArgs e)
+        {
+            await ExecuteDiscoveryAsync();
+        }
+
+        private async Task ExecuteDiscoveryAsync()
+        {
+            BeginDiscoveryOperation();
+            var version = discoveryOperationVersion;
+            var genre = GetSelectedDiscoveryGenre();
+            var sort = GetSelectedDiscoverySort();
+            var type = GetSelectedDiscoveryType();
+            var language = GetSelectedDiscoveryLanguage();
+            isLoadingDiscovery = true;
+            btnDiscover.Enabled = false;
+            toolStripStatusLabelMessage.Text = "Descobrindo resultados...";
+            UpdateLoadMoreButton();
+            try
+            {
+                var pageResult = await GetDiscoveryPageAsync(type, genre, sort, language, 1, discoveryCancellation.Token);
+                if (!IsCurrentDiscoveryOperation(version)) return;
+                discoveryAccumulatedItems = ApplyDiscoveryFilters(pageResult.Items, language, sort);
+                discoveryCurrentPage = Math.Max(1, pageResult.Page);
+                discoveryTotalPages = Math.Max(0, pageResult.TotalPages);
+                discoveryTotalResults = Math.Max(0, pageResult.TotalResults);
+                RenderDiscoveryResults(sort);
+                toolStripStatusLabelMessage.Text = discoveryAccumulatedItems.Count == 0
+                    ? "Nenhum resultado encontrado."
+                    : string.Format("{0} resultado(s) carregado(s) de {1}.", discoveryAccumulatedItems.Count, discoveryTotalResults > 0 ? discoveryTotalResults : discoveryAccumulatedItems.Count);
+                if (language == DiscoveryLanguageOption.PortugueseOriginalOrProbablyDubbed)
+                {
+                    toolStripStatusLabelMessage.Text += " Dublagem é estimada e pode variar por serviço.";
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (InvalidOperationException ex)
+            {
+                if (IsCurrentDiscoveryOperation(version))
+                {
+                    toolStripStatusLabelMessage.Text = ex.Message == "Configure sua chave do TMDb em Configurações." ? "Configure a chave do TMDb em Configurações." : "Erro ao consultar o TMDb.";
+                }
+            }
+            catch (Exception)
+            {
+                if (IsCurrentDiscoveryOperation(version)) toolStripStatusLabelMessage.Text = "Erro ao consultar o TMDb.";
+            }
+            finally
+            {
+                if (IsCurrentDiscoveryOperation(version))
+                {
+                    isLoadingDiscovery = false;
+                    btnDiscover.Enabled = true;
+                    UpdateLoadMoreButton();
+                }
+            }
+        }
+
+        private void BeginDiscoveryOperation()
+        {
+            InvalidateDiscoveryOperation();
+            discoveryCancellation = new CancellationTokenSource();
+            discoveryAccumulatedItems = new List<MediaItem>();
+            discoveryCurrentPage = 0;
+            discoveryTotalPages = 0;
+            discoveryTotalResults = 0;
+            discoveryReleaseDateTo = DateTime.Today;
+            discoveryReleaseDateFrom = discoveryReleaseDateTo.Value.AddMonths(-12);
+        }
+
+        private void InvalidateDiscoveryOperation()
+        {
+            discoveryOperationVersion++;
+            if (discoveryCancellation != null)
+            {
+                discoveryCancellation.Cancel();
+                discoveryCancellation.Dispose();
+                discoveryCancellation = null;
+            }
+            isLoadingDiscovery = false;
+        }
+
+        private bool IsCurrentDiscoveryOperation(int version)
+        {
+            return version == discoveryOperationVersion && currentView == MainViewMode.Discovery && !IsDisposed && !Disposing;
+        }
+
+        private async Task<PagedMediaResult> GetDiscoveryPageAsync(int type, DiscoveryGenreOption genre, DiscoverySortOption sort, DiscoveryLanguageOption language, int page, CancellationToken token)
+        {
+            if (type == 1)
+            {
+                if (genre != null && !genre.MovieGenreId.HasValue) return new PagedMediaResult();
+                return await tmdbService.DiscoverMoviesPageAsync(genre == null ? (int?)null : genre.MovieGenreId, sort, page, token, language, discoveryReleaseDateFrom, discoveryReleaseDateTo);
+            }
+            if (type == 2)
+            {
+                if (genre != null && !genre.TvGenreId.HasValue) return new PagedMediaResult();
+                return await tmdbService.DiscoverTvPageAsync(genre == null ? (int?)null : genre.TvGenreId, sort, page, token, language, discoveryReleaseDateFrom, discoveryReleaseDateTo);
+            }
+
+            var tasks = new List<Task<PagedMediaResult>>();
+            if (genre == null || genre.MovieGenreId.HasValue)
+            {
+                tasks.Add(tmdbService.DiscoverMoviesPageAsync(genre == null ? (int?)null : genre.MovieGenreId, sort, page, token, language, discoveryReleaseDateFrom, discoveryReleaseDateTo));
+            }
+            if (genre == null || genre.TvGenreId.HasValue)
+            {
+                tasks.Add(tmdbService.DiscoverTvPageAsync(genre == null ? (int?)null : genre.TvGenreId, sort, page, token, language, discoveryReleaseDateFrom, discoveryReleaseDateTo));
+            }
+            var pages = await Task.WhenAll(tasks);
+            var result = new PagedMediaResult
+            {
+                Page = page,
+                TotalPages = pages.Length == 0 ? 0 : pages.Max(item => item.TotalPages),
+                TotalResults = pages.Sum(item => item.TotalResults)
+            };
+            foreach (var pageResult in pages)
+            {
+                AppendDistinct(result.Items, pageResult.Items);
+            }
+            return result;
+        }
+
+        private static void AppendDistinct(ICollection<MediaItem> target, IEnumerable<MediaItem> items)
+        {
+            if (items == null) return;
+            foreach (var item in items)
+            {
+                if (item == null || target.Any(existing => existing.Id == item.Id && existing.MediaType == item.MediaType)) continue;
+                target.Add(item);
+            }
+        }
+
+        private List<MediaItem> ApplyDiscoveryFilters(IEnumerable<MediaItem> items, DiscoveryLanguageOption language, DiscoverySortOption sort)
+        {
+            var filtered = ApplyDiscoveryLanguageFilter(items, language);
+            if (sort != DiscoverySortOption.ReleaseDate) return filtered;
+            var from = discoveryReleaseDateFrom.Value;
+            var to = discoveryReleaseDateTo.Value;
+            return filtered.Where(item => item != null && item.ReleaseDate.HasValue && item.ReleaseDate.Value.Date >= from.Date && item.ReleaseDate.Value.Date <= to.Date).ToList();
+        }
+
+        private static List<MediaItem> ApplyDiscoveryLanguageFilter(IEnumerable<MediaItem> items, DiscoveryLanguageOption language)
+        {
+            var source = items ?? Enumerable.Empty<MediaItem>();
+            if (language != DiscoveryLanguageOption.PortugueseOriginalOrProbablyDubbed) return source.ToList();
+            return source.Where(MatchesPortugueseOriginalOrExplicitDubbingSignal).ToList();
+        }
+
+        private static bool MatchesPortugueseOriginalOrExplicitDubbingSignal(MediaItem item)
+        {
+            if (item == null) return false;
+            if (string.Equals(item.OriginalLanguage, "pt", StringComparison.OrdinalIgnoreCase)) return true;
+            var text = ((item.Title ?? string.Empty) + " " + (item.Overview ?? string.Empty)).ToLowerInvariant();
+            return text.Contains("dublado em portugues") || text.Contains("dublado em português") || text.Contains("dublada em portugues") || text.Contains("dublada em português") ||
+                text.Contains("dublagem em portugues") || text.Contains("dublagem em português") || text.Contains("dublado pt-br") ||
+                text.Contains("dublada pt-br") || text.Contains("dublagem pt-br") ||
+                text.Contains("versao brasileira") || text.Contains("versão brasileira") || text.Contains("portugues brasileiro") || text.Contains("português brasileiro");
+        }
+
+        private void RenderDiscoveryResults(DiscoverySortOption sort)
+        {
+            var items = discoveryAccumulatedItems ?? new List<MediaItem>();
+            IEnumerable<MediaItem> ordered = items;
+            if (sort == DiscoverySortOption.ReleaseDate) ordered = items.OrderByDescending(item => item.ReleaseDate ?? DateTime.MinValue).ThenBy(item => item.Title ?? string.Empty, StringComparer.CurrentCultureIgnoreCase);
+            else if (sort == DiscoverySortOption.VoteAverage) ordered = items.OrderByDescending(item => item.Rating ?? 0).ThenBy(item => item.Title ?? string.Empty, StringComparer.CurrentCultureIgnoreCase);
+            else ordered = items.OrderBy(item => item.Title ?? string.Empty, StringComparer.CurrentCultureIgnoreCase);
+            ClearResults();
+            foreach (var item in ordered) flowResults.Controls.Add(CreateMediaCard(item));
+        }
+
+        private async Task LoadMoreDiscoveryAsync()
+        {
+            if (isLoadingMore || isLoadingDiscovery || discoveryCancellation == null || discoveryCurrentPage < 1 || discoveryCurrentPage >= discoveryTotalPages) return;
+            var version = discoveryOperationVersion;
+            var nextPage = discoveryCurrentPage + 1;
+            isLoadingMore = true;
+            btnLoadMore.Enabled = false;
+            toolStripStatusLabelMessage.Text = "Carregando mais resultados...";
+            try
+            {
+                var pageResult = await GetDiscoveryPageAsync(cmbMediaType.SelectedIndex, GetSelectedDiscoveryGenre(), GetSelectedDiscoverySort(), GetSelectedDiscoveryLanguage(), nextPage, discoveryCancellation.Token);
+                if (!IsCurrentDiscoveryOperation(version)) return;
+                AppendDistinct(discoveryAccumulatedItems, ApplyDiscoveryFilters(pageResult.Items, GetSelectedDiscoveryLanguage(), GetSelectedDiscoverySort()));
+                discoveryCurrentPage = pageResult.Page < nextPage ? nextPage : pageResult.Page;
+                discoveryTotalPages = Math.Max(discoveryTotalPages, pageResult.TotalPages);
+                if (pageResult.TotalResults > 0) discoveryTotalResults = pageResult.TotalResults;
+                RenderDiscoveryResults(GetSelectedDiscoverySort());
+                toolStripStatusLabelMessage.Text = string.Format("{0} resultado(s) carregado(s) de {1}.", discoveryAccumulatedItems.Count, discoveryTotalResults > 0 ? discoveryTotalResults : discoveryAccumulatedItems.Count);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception)
+            {
+                if (IsCurrentDiscoveryOperation(version)) toolStripStatusLabelMessage.Text = "Não foi possível carregar mais resultados.";
+            }
+            finally
+            {
+                if (IsCurrentDiscoveryOperation(version))
+                {
+                    isLoadingMore = false;
+                    UpdateLoadMoreButton();
+                }
+            }
+        }
         private async void btnSearch_Click(object sender, EventArgs e)
         {
             await ExecuteSearchAsync();
@@ -183,6 +586,7 @@ namespace StreamFinder.WinForms
             searchOperationVersion++;
             CancelFilterOperation();
             isLoadingMore = false;
+            InvalidateDiscoveryOperation();
             currentView = MainViewMode.History;
         }
 
@@ -196,6 +600,12 @@ namespace StreamFinder.WinForms
 
         private async void btnLoadMore_Click(object sender, EventArgs e)
         {
+            if (currentView == MainViewMode.Discovery)
+            {
+                await LoadMoreDiscoveryAsync();
+                return;
+            }
+
             if (isLoadingMore || currentView != MainViewMode.Search ||
                 string.IsNullOrWhiteSpace(currentSearchQuery) ||
                 currentSearchPage < 1 || currentSearchPage >= totalSearchPages)
@@ -290,15 +700,16 @@ namespace StreamFinder.WinForms
 
         private void UpdateLoadMoreButton()
         {
-            var hasNextPage = currentView == MainViewMode.Search &&
-                currentSearchPage > 0 && totalSearchPages > currentSearchPage;
+            var hasNextPage = currentView == MainViewMode.Search
+                ? currentSearchPage > 0 && totalSearchPages > currentSearchPage
+                : currentView == MainViewMode.Discovery && discoveryCurrentPage > 0 && discoveryTotalPages > discoveryCurrentPage;
             btnLoadMore.Visible = hasNextPage;
-            btnLoadMore.Enabled = hasNextPage && !isLoadingMore;
+            btnLoadMore.Enabled = hasNextPage && !isLoadingMore && !isLoadingDiscovery;
         }
 
         private async void chkOwnedOnly_CheckedChanged(object sender, EventArgs e)
         {
-            if (currentView != MainViewMode.Search || isLoadingMore || !btnSearch.Enabled || lastSearchResults == null)
+            if (isUpdatingDiscoveryControls || currentView != MainViewMode.Search || isLoadingMore || !btnSearch.Enabled || lastSearchResults == null)
             {
                 return;
             }
@@ -347,7 +758,7 @@ namespace StreamFinder.WinForms
 
         private async void SearchViewFilter_Changed(object sender, EventArgs e)
         {
-            if (currentView != MainViewMode.Search || isLoadingMore || !btnSearch.Enabled ||
+            if (isUpdatingDiscoveryControls || currentView != MainViewMode.Search || isLoadingMore || !btnSearch.Enabled ||
                 lastSearchResults == null || lastSearchResults.Count == 0)
             {
                 return;
@@ -831,6 +1242,10 @@ namespace StreamFinder.WinForms
 
         private void btnFavorites_Click(object sender, EventArgs e)
         {
+            searchOperationVersion++;
+            CancelFilterOperation();
+            InvalidateDiscoveryOperation();
+            ConfigureSearchControls();
             currentView = MainViewMode.Favorites;
             UpdateLoadMoreButton();
             ClearResults();
@@ -848,7 +1263,11 @@ namespace StreamFinder.WinForms
 
         private void btnSearchNavigation_Click(object sender, EventArgs e)
         {
+            searchOperationVersion++;
+            CancelFilterOperation();
+            InvalidateDiscoveryOperation();
             currentView = MainViewMode.Search;
+            ConfigureSearchControls();
             UpdateLoadMoreButton();
             ClearResults();
             txtSearch.Focus();
@@ -862,7 +1281,11 @@ namespace StreamFinder.WinForms
 
         private void LoadHistoryView()
         {
+            searchOperationVersion++;
+            CancelFilterOperation();
+            InvalidateDiscoveryOperation();
             currentView = MainViewMode.History;
+            ConfigureSearchControls();
             UpdateLoadMoreButton();
             ClearResults();
 
