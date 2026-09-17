@@ -703,6 +703,7 @@ namespace StreamFinder.WinForms
             var hasNextPage = currentView == MainViewMode.Search
                 ? currentSearchPage > 0 && totalSearchPages > currentSearchPage
                 : currentView == MainViewMode.Discovery && discoveryCurrentPage > 0 && discoveryTotalPages > discoveryCurrentPage;
+            panelLoadMore.Visible = hasNextPage;
             btnLoadMore.Visible = hasNextPage;
             btnLoadMore.Enabled = hasNextPage && !isLoadingMore && !isLoadingDiscovery;
         }
